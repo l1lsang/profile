@@ -45,6 +45,7 @@ type RemotePayload = {
 }
 
 type ListField = 'atmosphere' | 'specialties' | 'methods'
+type ListTextMap = Record<ListField, string>
 type ReviewMetric = 'overall' | 'empathy' | 'listening' | 'comfort'
 
 const LOCAL_STORAGE_KEY = 'counselor-profile-data-v1'
@@ -92,6 +93,12 @@ const splitList = (value: string) =>
     .filter(Boolean)
 
 const joinList = (value: string[]) => value.join(', ')
+
+const profileToListTexts = (profile: CounselorProfile): ListTextMap => ({
+  atmosphere: joinList(profile.atmosphere),
+  specialties: joinList(profile.specialties),
+  methods: joinList(profile.methods),
+})
 
 const normalizeProfile = (profile: CounselorProfile): CounselorProfile => ({
   ...profile,
@@ -303,6 +310,9 @@ function ProfilePreview({
 function App() {
   const [data, setData] = useState<AppData>(() => makeDefaultData())
   const [draft, setDraft] = useState<CounselorProfile>(() => makeDefaultProfile())
+  const [listTexts, setListTexts] = useState<ListTextMap>(() =>
+    profileToListTexts(makeDefaultProfile()),
+  )
   const [reviewDraft, setReviewDraft] = useState(emptyReview)
   const [isRemoteReady, setIsRemoteReady] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
@@ -353,6 +363,7 @@ function App() {
 
         setData(nextData)
         setDraft(nextData.profile)
+        setListTexts(profileToListTexts(nextData.profile))
         setIsUnlocked(!nextData.hasPassword)
         setIsRemoteReady(true)
         setStatus(nextData.hasPassword ? 'Vercel API와 연결됨' : '암호 설정 후 저장 가능')
@@ -369,6 +380,7 @@ function App() {
         hasPassword: Boolean(fallback.passwordHash),
       })
       setDraft(fallback.profile)
+      setListTexts(profileToListTexts(fallback.profile))
       setLocalPasswordHash(fallback.passwordHash)
       setIsUnlocked(!fallback.passwordHash)
       setIsRemoteReady(false)
@@ -394,6 +406,10 @@ function App() {
   }
 
   const handleListChange = (key: ListField, value: string) => {
+    setListTexts((current) => ({
+      ...current,
+      [key]: value,
+    }))
     updateDraft(key, splitList(value))
   }
 
@@ -469,6 +485,7 @@ function App() {
 
         setData(nextData)
         setDraft(nextData.profile)
+        setListTexts(profileToListTexts(nextData.profile))
         setConfirmedPassword(trimmedNewPassword || confirmedPassword)
         setNewPassword('')
         setStatus('Firebase에 저장됨')
@@ -489,6 +506,7 @@ function App() {
     writeLocalData(nextData, nextPasswordHash)
     setData(nextData)
     setDraft(profile)
+    setListTexts(profileToListTexts(profile))
     setLocalPasswordHash(nextPasswordHash)
     setConfirmedPassword(trimmedNewPassword || confirmedPassword)
     setNewPassword('')
@@ -624,7 +642,7 @@ function App() {
               <label>
                 상담 분위기
                 <input
-                  value={joinList(draft.atmosphere)}
+                  value={listTexts.atmosphere}
                   onChange={(event) => handleListChange('atmosphere', event.target.value)}
                 />
               </label>
@@ -640,7 +658,7 @@ function App() {
               <label>
                 주요 상담 분야
                 <input
-                  value={joinList(draft.specialties)}
+                  value={listTexts.specialties}
                   onChange={(event) => handleListChange('specialties', event.target.value)}
                 />
               </label>
@@ -648,7 +666,7 @@ function App() {
               <label>
                 상담 방식
                 <input
-                  value={joinList(draft.methods)}
+                  value={listTexts.methods}
                   onChange={(event) => handleListChange('methods', event.target.value)}
                 />
               </label>
