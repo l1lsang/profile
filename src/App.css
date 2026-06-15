@@ -123,6 +123,66 @@
   gap: 14px;
 }
 
+.counselor-manager {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.add-counselor-button {
+  min-height: 42px;
+  border: 1px solid #b7ded3;
+  border-radius: 8px;
+  background: #f4fbf8;
+  color: var(--teal);
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.counselor-tabs {
+  display: grid;
+  gap: 8px;
+}
+
+.counselor-tabs button {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffefb;
+  color: var(--muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.counselor-tabs button.is-active {
+  border-color: var(--teal);
+  background: #effaf6;
+  color: var(--ink);
+}
+
+.counselor-tabs strong {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.counselor-tabs span {
+  overflow-wrap: anywhere;
+}
+
+.counselor-tabs button > span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 750;
+}
+
 .two-column {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

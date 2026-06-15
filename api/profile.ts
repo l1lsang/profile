@@ -27,10 +27,15 @@ type Review = {
   createdAt: string
 }
 
-type StoredData = {
-  profile: CounselorProfile | null
+type StoredCounselor = {
+  id: string
+  profile: CounselorProfile
   reviews: Review[]
   passwordHash: string
+}
+
+type StoredData = {
+  counselors: StoredCounselor[]
 }
 
 type FirebaseConfig = {
@@ -90,6 +95,22 @@ const getFirebaseConfig = (): FirebaseConfig | null => {
     databaseId: process.env.FIREBASE_DATABASE_ID || '(default)',
   }
 }
+
+const makeDefaultProfile = (): CounselorProfile => ({
+  nickname: '상담사',
+  avatarEmoji: '💬',
+  empathy: 5,
+  listening: 5,
+  atmosphere: ['편안함'],
+  adviceStyle: '공감형',
+  specialties: ['마음 상담'],
+  methods: ['텍스트 상담'],
+  responseSpeed: '보통',
+  intro: '천천히 들어드릴게요.',
+  statusEmoji: '☁️',
+  contactNote: '상담 가능',
+  updatedAt: new Date().toISOString(),
+})
 
 const hashPassword = (password: string) =>
   createHash('sha256').update(password, 'utf8').digest('hex')
@@ -158,6 +179,26 @@ const sanitizeReview = (value: unknown): Review | null => {
     emoji: cleanString(value.emoji, '😊'),
     comment: cleanString(value.comment, ''),
     createdAt: cleanString(value.createdAt, new Date().toISOString()),
+  }
+}
+
+const sanitizeStoredCounselor = (value: unknown): StoredCounselor | null => {
+  if (!isRecord(value)) {
+    return null
+  }
+
+  const profile = sanitizeProfile(value.profile) ?? makeDefaultProfile()
+  const reviews = Array.isArray(value.reviews)
+    ? value.reviews
+        .map((review) => sanitizeReview(review))
+        .filter((review): review is Review => Boolean(review))
+    : []
+
+  return {
+    id: cleanString(value.id, `counselor-${Date.now()}`),
+    profile,
+    reviews,
+    passwordHash: typeof value.passwordHash === 'string' ? value.passwordHash : '',
   }
 }
 
@@ -277,31 +318,56 @@ const readStoredData = async (config: FirebaseConfig): Promise<StoredData | null
 
   const document = (await response.json()) as UnknownRecord
   const fields = isRecord(document.fields) ? document.fields : {}
-  const reviews = parseJsonField<Review[]>(fields.reviewsJson, [])
-  const profile = parseJsonField<CounselorProfile | null>(fields.profileJson, null)
+  const counselorsJson = parseJsonField<unknown[]>(fields.counselorsJson, [])
+
+  if (Array.isArray(counselorsJson) && counselorsJson.length) {
+    return {
+      counselors: counselorsJson
+        .map((counselor) => sanitizeStoredCounselor(counselor))
+        .filter((counselor): counselor is StoredCounselor => Boolean(counselor)),
+    }
+  }
+
+  const legacyProfile = parseJsonField<CounselorProfile | null>(fields.profileJson, null)
+  const profile = sanitizeProfile(legacyProfile) ?? null
+  const reviews = parseJsonField<unknown[]>(fields.reviewsJson, [])
   const passwordHash =
     isRecord(fields.passwordHash) && typeof fields.passwordHash.stringValue === 'string'
       ? fields.passwordHash.stringValue
       : ''
 
+  if (!profile) {
+    return {
+      counselors: [],
+    }
+  }
+
   return {
-    profile,
-    reviews: Array.isArray(reviews) ? reviews : [],
-    passwordHash,
+    counselors: [
+      {
+        id: 'main',
+        profile,
+        reviews: Array.isArray(reviews)
+          ? reviews
+              .map((review) => sanitizeReview(review))
+              .filter((review): review is Review => Boolean(review))
+          : [],
+        passwordHash,
+      },
+    ],
   }
 }
 
 const writeStoredData = async (config: FirebaseConfig, data: StoredData) => {
   const response = await firestoreFetch(config, 'PATCH', {
     fields: {
-      profileJson: {
-        stringValue: JSON.stringify(data.profile),
-      },
-      reviewsJson: {
-        stringValue: JSON.stringify(data.reviews.slice(0, MAX_REVIEWS)),
-      },
-      passwordHash: {
-        stringValue: data.passwordHash,
+      counselorsJson: {
+        stringValue: JSON.stringify(
+          data.counselors.map((counselor) => ({
+            ...counselor,
+            reviews: counselor.reviews.slice(0, MAX_REVIEWS),
+          })),
+        ),
       },
       updatedAt: {
         timestampValue: new Date().toISOString(),
@@ -314,11 +380,30 @@ const writeStoredData = async (config: FirebaseConfig, data: StoredData) => {
   }
 }
 
-const toPublicPayload = (data: StoredData | null) => ({
-  profile: data?.profile ?? null,
-  reviews: data?.reviews ?? [],
-  hasPassword: Boolean(data?.passwordHash),
-})
+const toPublicPayload = (data: StoredData | null) => {
+  const counselors =
+    data?.counselors.map(({ passwordHash, ...counselor }) => ({
+      ...counselor,
+      hasPassword: Boolean(passwordHash),
+    })) ?? []
+
+  return {
+    counselors,
+    activeCounselorId: counselors[0]?.id ?? '',
+  }
+}
+
+const findCounselorIndex = (data: StoredData | null, counselorId: unknown) => {
+  if (!data?.counselors.length) {
+    return -1
+  }
+
+  if (typeof counselorId === 'string' && counselorId) {
+    return data.counselors.findIndex((counselor) => counselor.id === counselorId)
+  }
+
+  return 0
+}
 
 const sendMethodNotAllowed = (res: ApiResponse) => {
   res.status(405).json({ error: 'Method not allowed' })
@@ -353,24 +438,38 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const storedData = await readStoredData(config)
 
       if (body.type === 'unlock') {
+        const counselorIndex = findCounselorIndex(storedData, body.counselorId)
+
+        if (counselorIndex < 0) {
+          res.status(404).json({ ok: false })
+          return
+        }
+
         const password = typeof body.password === 'string' ? body.password : ''
-        const ok = !storedData?.passwordHash || hashPassword(password) === storedData.passwordHash
+        const passwordHash = storedData?.counselors[counselorIndex].passwordHash ?? ''
+        const ok = !passwordHash || hashPassword(password) === passwordHash
         res.status(ok ? 200 : 401).json({ ok })
         return
       }
 
       if (body.type === 'review') {
+        const counselorIndex = findCounselorIndex(storedData, body.counselorId)
         const review = sanitizeReview(body.review)
 
-        if (!review) {
+        if (counselorIndex < 0 || !storedData || !review) {
           res.status(400).json({ error: 'Invalid review' })
           return
         }
 
         const nextData: StoredData = {
-          profile: storedData?.profile ?? null,
-          reviews: [review, ...(storedData?.reviews ?? [])].slice(0, MAX_REVIEWS),
-          passwordHash: storedData?.passwordHash ?? '',
+          counselors: storedData.counselors.map((counselor, index) =>
+            index === counselorIndex
+              ? {
+                  ...counselor,
+                  reviews: [review, ...counselor.reviews].slice(0, MAX_REVIEWS),
+                }
+              : counselor,
+          ),
         }
 
         await writeStoredData(config, nextData)
@@ -385,14 +484,18 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
     if (req.method === 'PUT') {
       const body = parseBody(req.body)
       const profile = sanitizeProfile(body.profile)
+      const counselorId = cleanString(body.counselorId, `counselor-${Date.now()}`)
 
       if (!profile) {
         res.status(400).json({ error: 'Invalid profile' })
         return
       }
 
-      const storedData = await readStoredData(config)
-      const currentHash = storedData?.passwordHash ?? ''
+      const storedData = (await readStoredData(config)) ?? { counselors: [] }
+      const counselorIndex = findCounselorIndex(storedData, counselorId)
+      const existingCounselor =
+        counselorIndex >= 0 ? storedData.counselors[counselorIndex] : null
+      const currentHash = existingCounselor?.passwordHash ?? ''
       const password = typeof body.password === 'string' ? body.password : ''
       const newPassword = typeof body.newPassword === 'string' ? body.newPassword.trim() : ''
       let nextPasswordHash = currentHash
@@ -411,10 +514,19 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         return
       }
 
-      const nextData: StoredData = {
+      const nextCounselor: StoredCounselor = {
+        id: existingCounselor?.id ?? counselorId,
         profile,
-        reviews: storedData?.reviews ?? [],
+        reviews: existingCounselor?.reviews ?? [],
         passwordHash: nextPasswordHash,
+      }
+      const nextData: StoredData = {
+        counselors:
+          counselorIndex >= 0
+            ? storedData.counselors.map((counselor, index) =>
+                index === counselorIndex ? nextCounselor : counselor,
+              )
+            : [...storedData.counselors, nextCounselor],
       }
 
       await writeStoredData(config, nextData)

@@ -29,19 +29,39 @@ type Review = {
 }
 
 type AppData = {
+  counselors: Counselor[]
+  activeCounselorId: string
+}
+
+type Counselor = {
+  id: string
   profile: CounselorProfile
   reviews: Review[]
   hasPassword: boolean
 }
 
-type LocalPayload = AppData & {
+type LocalCounselor = Counselor & {
+  passwordHash: string
+}
+
+type LocalPayload = {
+  counselors: LocalCounselor[]
+  activeCounselorId: string
+}
+
+type LegacyLocalPayload = {
+  profile: CounselorProfile
+  reviews: Review[]
+  hasPassword: boolean
   passwordHash: string
 }
 
 type RemotePayload = {
-  profile: CounselorProfile | null
-  reviews: Review[]
-  hasPassword: boolean
+  counselors?: Counselor[]
+  activeCounselorId?: string
+  profile?: CounselorProfile | null
+  reviews?: Review[]
+  hasPassword?: boolean
 }
 
 type ListField = 'atmosphere' | 'specialties' | 'methods'
@@ -78,11 +98,29 @@ const makeDefaultProfile = (): CounselorProfile => ({
   updatedAt: new Date().toISOString(),
 })
 
-const makeDefaultData = (): AppData => ({
-  profile: makeDefaultProfile(),
-  reviews: [],
-  hasPassword: false,
+const makeCounselorId = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `counselor-${Date.now()}-${Math.random()}`
+
+const makeCounselor = (
+  profile: CounselorProfile = makeDefaultProfile(),
+  reviews: Review[] = [],
+  hasPassword = false,
+  id = makeCounselorId(),
+): Counselor => ({
+  id,
+  profile,
+  reviews,
+  hasPassword,
 })
+
+const makeDefaultData = (): AppData => {
+  const counselor = makeCounselor()
+
+  return {
+    counselors: [counselor],
+    activeCounselorId: counselor.id,
+  }
+}
 
 const clampRating = (value: number) => Math.min(5, Math.max(1, Math.round(value)))
 
@@ -151,20 +189,113 @@ const hashPassword = async (password: string) => {
     .join('')
 }
 
-const readLocalData = (): LocalPayload | null => {
+const readLocalData = (): LegacyLocalPayload | LocalPayload | null => {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY)
-    return raw ? (JSON.parse(raw) as LocalPayload) : null
+    return raw ? (JSON.parse(raw) as LegacyLocalPayload | LocalPayload) : null
   } catch {
     return null
   }
 }
 
-const writeLocalData = (data: AppData, passwordHash: string) => {
+const isLocalPayload = (
+  value: LegacyLocalPayload | LocalPayload,
+): value is LocalPayload => 'counselors' in value
+
+const makeDataFromRemote = (
+  remote: RemotePayload,
+  preferredCounselorId?: string,
+): AppData => {
+  if (remote.counselors?.length) {
+    const activeCounselorId =
+      preferredCounselorId && remote.counselors.some((counselor) => counselor.id === preferredCounselorId)
+        ? preferredCounselorId
+        : remote.activeCounselorId && remote.counselors.some((counselor) => counselor.id === remote.activeCounselorId)
+          ? remote.activeCounselorId
+          : remote.counselors[0].id
+
+    return {
+      counselors: remote.counselors,
+      activeCounselorId,
+    }
+  }
+
+  const counselor = makeCounselor(
+    remote.profile ?? makeDefaultProfile(),
+    remote.reviews ?? [],
+    Boolean(remote.hasPassword),
+    'main',
+  )
+
+  return {
+    counselors: [counselor],
+    activeCounselorId: counselor.id,
+  }
+}
+
+const makeDataFromLocal = (
+  local: LegacyLocalPayload | LocalPayload | null,
+): {
+  data: AppData
+  passwordHashes: Record<string, string>
+} => {
+  if (!local) {
+    return {
+      data: makeDefaultData(),
+      passwordHashes: {},
+    }
+  }
+
+  if (isLocalPayload(local)) {
+    const counselors = local.counselors.map(({ passwordHash, ...counselor }) => ({
+      ...counselor,
+      hasPassword: Boolean(passwordHash),
+    }))
+    const fallbackData = makeDefaultData()
+    const activeCounselorId =
+      local.activeCounselorId && counselors.some((counselor) => counselor.id === local.activeCounselorId)
+        ? local.activeCounselorId
+        : counselors[0]?.id
+
+    return {
+      data: counselors.length
+        ? {
+            counselors,
+            activeCounselorId,
+          }
+        : fallbackData,
+      passwordHashes: Object.fromEntries(
+        local.counselors.map((counselor) => [counselor.id, counselor.passwordHash]),
+      ),
+    }
+  }
+
+  const counselor = makeCounselor(
+    local.profile,
+    local.reviews,
+    Boolean(local.passwordHash),
+    'main',
+  )
+
+  return {
+    data: {
+      counselors: [counselor],
+      activeCounselorId: counselor.id,
+    },
+    passwordHashes: {
+      [counselor.id]: local.passwordHash,
+    },
+  }
+}
+
+const writeLocalData = (data: AppData, passwordHashes: Record<string, string>) => {
   const payload: LocalPayload = {
-    ...data,
-    hasPassword: Boolean(passwordHash),
-    passwordHash,
+    activeCounselorId: data.activeCounselorId,
+    counselors: data.counselors.map((counselor) => ({
+      ...counselor,
+      hasPassword: Boolean(passwordHashes[counselor.id]),
+      passwordHash: passwordHashes[counselor.id] ?? '',
+    })),
   }
 
   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(payload))
@@ -316,32 +447,39 @@ function App() {
   const [reviewDraft, setReviewDraft] = useState(emptyReview)
   const [isRemoteReady, setIsRemoteReady] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
-  const [isUnlocked, setIsUnlocked] = useState(true)
   const [unlockPassword, setUnlockPassword] = useState('')
-  const [confirmedPassword, setConfirmedPassword] = useState('')
+  const [confirmedPasswords, setConfirmedPasswords] = useState<Record<string, string>>({})
   const [newPassword, setNewPassword] = useState('')
-  const [localPasswordHash, setLocalPasswordHash] = useState('')
+  const [localPasswordHashes, setLocalPasswordHashes] = useState<Record<string, string>>({})
   const [status, setStatus] = useState('프로필을 준비하고 있어요.')
+
+  const activeCounselor =
+    data.counselors.find((counselor) => counselor.id === data.activeCounselorId) ??
+    data.counselors[0]
+  const activeCounselorId = activeCounselor?.id ?? ''
+  const activeReviews = useMemo(() => activeCounselor?.reviews ?? [], [activeCounselor])
+  const isUnlocked =
+    !activeCounselor?.hasPassword || Boolean(confirmedPasswords[activeCounselorId])
 
   const reviewSummary = useMemo(
     () => ({
-      overall: average(data.reviews, 'overall'),
-      empathy: average(data.reviews, 'empathy'),
-      listening: average(data.reviews, 'listening'),
-      comfort: average(data.reviews, 'comfort'),
+      overall: average(activeReviews, 'overall'),
+      empathy: average(activeReviews, 'empathy'),
+      listening: average(activeReviews, 'listening'),
+      comfort: average(activeReviews, 'comfort'),
     }),
-    [data.reviews],
+    [activeReviews],
   )
 
   const recentReviews = useMemo(
     () =>
-      [...data.reviews]
+      [...activeReviews]
         .sort(
           (first, second) =>
             new Date(second.createdAt).getTime() - new Date(first.createdAt).getTime(),
         )
         .slice(0, 4),
-    [data.reviews],
+    [activeReviews],
   )
 
   useEffect(() => {
@@ -355,36 +493,31 @@ function App() {
       }
 
       if (remote) {
-        const nextData: AppData = {
-          profile: remote.profile ?? makeDefaultProfile(),
-          reviews: remote.reviews ?? [],
-          hasPassword: remote.hasPassword,
-        }
+        const nextData = makeDataFromRemote(remote)
+        const nextCounselor =
+          nextData.counselors.find((counselor) => counselor.id === nextData.activeCounselorId) ??
+          nextData.counselors[0]
 
         setData(nextData)
-        setDraft(nextData.profile)
-        setListTexts(profileToListTexts(nextData.profile))
-        setIsUnlocked(!nextData.hasPassword)
+        setDraft(nextCounselor.profile)
+        setListTexts(profileToListTexts(nextCounselor.profile))
         setIsRemoteReady(true)
-        setStatus(nextData.hasPassword ? 'Vercel API와 연결됨' : '암호 설정 후 저장 가능')
+        setStatus(nextCounselor.hasPassword ? 'Vercel API와 연결됨' : '암호 설정 후 저장 가능')
         setIsLoading(false)
         return
       }
 
-      const local = readLocalData()
-      const fallback = local ?? { ...makeDefaultData(), passwordHash: '' }
+      const { data: nextData, passwordHashes } = makeDataFromLocal(readLocalData())
+      const nextCounselor =
+        nextData.counselors.find((counselor) => counselor.id === nextData.activeCounselorId) ??
+        nextData.counselors[0]
 
-      setData({
-        profile: fallback.profile,
-        reviews: fallback.reviews,
-        hasPassword: Boolean(fallback.passwordHash),
-      })
-      setDraft(fallback.profile)
-      setListTexts(profileToListTexts(fallback.profile))
-      setLocalPasswordHash(fallback.passwordHash)
-      setIsUnlocked(!fallback.passwordHash)
+      setData(nextData)
+      setDraft(nextCounselor.profile)
+      setListTexts(profileToListTexts(nextCounselor.profile))
+      setLocalPasswordHashes(passwordHashes)
       setIsRemoteReady(false)
-      setStatus(fallback.passwordHash ? '로컬 저장소에서 불러옴' : '로컬 임시 저장 모드')
+      setStatus(nextCounselor.hasPassword ? '로컬 저장소에서 불러옴' : '로컬 임시 저장 모드')
       setIsLoading(false)
     }
 
@@ -413,11 +546,64 @@ function App() {
     updateDraft(key, splitList(value))
   }
 
+  const dataWithCurrentDraft = (): AppData => ({
+    ...data,
+    counselors: data.counselors.map((counselor) =>
+      counselor.id === activeCounselorId
+        ? {
+            ...counselor,
+            profile: draft,
+          }
+        : counselor,
+    ),
+  })
+
+  const selectCounselor = (counselorId: string) => {
+    const nextData = {
+      ...dataWithCurrentDraft(),
+      activeCounselorId: counselorId,
+    }
+    const nextCounselor =
+      nextData.counselors.find((counselor) => counselor.id === counselorId) ??
+      nextData.counselors[0]
+
+    setData(nextData)
+    setDraft(nextCounselor.profile)
+    setListTexts(profileToListTexts(nextCounselor.profile))
+    setUnlockPassword('')
+    setNewPassword('')
+    setReviewDraft(emptyReview)
+    setStatus(nextCounselor.hasPassword ? '암호 확인이 필요해요.' : '편집 가능')
+  }
+
+  const addCounselor = () => {
+    const nextProfile = {
+      ...makeDefaultProfile(),
+      nickname: `상담사 ${data.counselors.length + 1}`,
+      avatarEmoji: '💬',
+      statusEmoji: '✨',
+      updatedAt: new Date().toISOString(),
+    }
+    const nextCounselor = makeCounselor(nextProfile)
+    const nextData = {
+      ...dataWithCurrentDraft(),
+      counselors: [...dataWithCurrentDraft().counselors, nextCounselor],
+      activeCounselorId: nextCounselor.id,
+    }
+
+    setData(nextData)
+    setDraft(nextCounselor.profile)
+    setListTexts(profileToListTexts(nextCounselor.profile))
+    setUnlockPassword('')
+    setNewPassword('')
+    setReviewDraft(emptyReview)
+    setStatus('새 상담사를 추가했어요. 암호를 설정하고 저장해주세요.')
+  }
+
   const handleUnlock = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (!data.hasPassword) {
-      setIsUnlocked(true)
+    if (!activeCounselor?.hasPassword) {
       setStatus('편집 가능')
       return
     }
@@ -427,21 +613,26 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           type: 'unlock',
+          counselorId: activeCounselorId,
           password: unlockPassword,
         }),
       })
 
       if (result?.ok) {
-        setConfirmedPassword(unlockPassword)
+        setConfirmedPasswords((current) => ({
+          ...current,
+          [activeCounselorId]: unlockPassword,
+        }))
         setUnlockPassword('')
-        setIsUnlocked(true)
         setStatus('암호 확인 완료')
         return
       }
-    } else if ((await hashPassword(unlockPassword)) === localPasswordHash) {
-      setConfirmedPassword(unlockPassword)
+    } else if ((await hashPassword(unlockPassword)) === localPasswordHashes[activeCounselorId]) {
+      setConfirmedPasswords((current) => ({
+        ...current,
+        [activeCounselorId]: unlockPassword,
+      }))
       setUnlockPassword('')
-      setIsUnlocked(true)
       setStatus('암호 확인 완료')
       return
     }
@@ -452,14 +643,14 @@ function App() {
   const handleSave = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
 
-    if (data.hasPassword && !isUnlocked) {
+    if (activeCounselor?.hasPassword && !isUnlocked) {
       setStatus('암호 확인이 필요해요.')
       return
     }
 
     const trimmedNewPassword = newPassword.trim()
 
-    if (!data.hasPassword && !trimmedNewPassword) {
+    if (!activeCounselor?.hasPassword && !trimmedNewPassword) {
       setStatus('처음 저장할 때는 암호가 필요해요.')
       return
     }
@@ -470,23 +661,26 @@ function App() {
       const remote = await requestJson<RemotePayload>('/api/profile', {
         method: 'PUT',
         body: JSON.stringify({
+          counselorId: activeCounselorId,
           profile,
-          password: confirmedPassword,
+          password: confirmedPasswords[activeCounselorId] ?? '',
           newPassword: trimmedNewPassword,
         }),
       })
 
       if (remote) {
-        const nextData: AppData = {
-          profile: remote.profile ?? profile,
-          reviews: remote.reviews,
-          hasPassword: remote.hasPassword,
-        }
+        const nextData = makeDataFromRemote(remote, activeCounselorId)
+        const nextCounselor =
+          nextData.counselors.find((counselor) => counselor.id === nextData.activeCounselorId) ??
+          nextData.counselors[0]
 
         setData(nextData)
-        setDraft(nextData.profile)
-        setListTexts(profileToListTexts(nextData.profile))
-        setConfirmedPassword(trimmedNewPassword || confirmedPassword)
+        setDraft(nextCounselor.profile)
+        setListTexts(profileToListTexts(nextCounselor.profile))
+        setConfirmedPasswords((current) => ({
+          ...current,
+          [activeCounselorId]: trimmedNewPassword || current[activeCounselorId] || '',
+        }))
         setNewPassword('')
         setStatus('Firebase에 저장됨')
         return
@@ -495,20 +689,38 @@ function App() {
 
     const nextPasswordHash = trimmedNewPassword
       ? await hashPassword(trimmedNewPassword)
-      : localPasswordHash || (confirmedPassword ? await hashPassword(confirmedPassword) : '')
+      : localPasswordHashes[activeCounselorId] ||
+        (confirmedPasswords[activeCounselorId]
+          ? await hashPassword(confirmedPasswords[activeCounselorId])
+          : '')
 
     const nextData: AppData = {
-      profile,
-      reviews: data.reviews,
-      hasPassword: Boolean(nextPasswordHash),
+      ...data,
+      counselors: data.counselors.map((counselor) =>
+        counselor.id === activeCounselorId
+          ? {
+              ...counselor,
+              profile,
+              hasPassword: Boolean(nextPasswordHash),
+            }
+          : counselor,
+      ),
+      activeCounselorId,
+    }
+    const nextPasswordHashes = {
+      ...localPasswordHashes,
+      [activeCounselorId]: nextPasswordHash,
     }
 
-    writeLocalData(nextData, nextPasswordHash)
+    writeLocalData(nextData, nextPasswordHashes)
     setData(nextData)
     setDraft(profile)
     setListTexts(profileToListTexts(profile))
-    setLocalPasswordHash(nextPasswordHash)
-    setConfirmedPassword(trimmedNewPassword || confirmedPassword)
+    setLocalPasswordHashes(nextPasswordHashes)
+    setConfirmedPasswords((current) => ({
+      ...current,
+      [activeCounselorId]: trimmedNewPassword || current[activeCounselorId] || '',
+    }))
     setNewPassword('')
     setIsRemoteReady(false)
     setStatus('로컬에 저장됨')
@@ -529,19 +741,20 @@ function App() {
         method: 'POST',
         body: JSON.stringify({
           type: 'review',
+          counselorId: activeCounselorId,
           review,
         }),
       })
 
       if (remote) {
-        const nextData: AppData = {
-          profile: remote.profile ?? data.profile,
-          reviews: remote.reviews,
-          hasPassword: remote.hasPassword,
-        }
+        const nextData = makeDataFromRemote(remote, activeCounselorId)
+        const nextCounselor =
+          nextData.counselors.find((counselor) => counselor.id === nextData.activeCounselorId) ??
+          nextData.counselors[0]
 
         setData(nextData)
-        setDraft(nextData.profile)
+        setDraft(nextCounselor.profile)
+        setListTexts(profileToListTexts(nextCounselor.profile))
         setReviewDraft(emptyReview)
         setStatus('평가가 저장됨')
         return
@@ -550,10 +763,17 @@ function App() {
 
     const nextData = {
       ...data,
-      reviews: [review, ...data.reviews],
+      counselors: data.counselors.map((counselor) =>
+        counselor.id === activeCounselorId
+          ? {
+              ...counselor,
+              reviews: [review, ...counselor.reviews],
+            }
+          : counselor,
+      ),
     }
 
-    writeLocalData(nextData, localPasswordHash)
+    writeLocalData(nextData, localPasswordHashes)
     setData(nextData)
     setReviewDraft(emptyReview)
     setIsRemoteReady(false)
@@ -580,14 +800,41 @@ function App() {
           <div className="panel-heading">
             <div>
               <p className="eyebrow">직접 입력</p>
-              <h2>프로필 편집</h2>
+              <h2>{draft.nickname} 편집</h2>
             </div>
             <span className={isUnlocked ? 'lock-state open' : 'lock-state'}>
               {isUnlocked ? '편집 가능' : '잠김'}
             </span>
           </div>
 
-          {data.hasPassword && !isUnlocked ? (
+          <div className="counselor-manager">
+            <button className="add-counselor-button" type="button" onClick={addCounselor}>
+              + 새 상담사 추가
+            </button>
+            <div className="counselor-tabs" role="tablist" aria-label="상담사 선택">
+              {data.counselors.map((counselor) => (
+                <button
+                  key={counselor.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={counselor.id === activeCounselorId}
+                  className={counselor.id === activeCounselorId ? 'is-active' : ''}
+                  onClick={() => selectCounselor(counselor.id)}
+                >
+                  <strong>
+                    <span aria-hidden="true">{counselor.profile.avatarEmoji}</span>
+                    {counselor.profile.nickname}
+                  </strong>
+                  <span>
+                    {counselor.reviews.length}개 평가 ·{' '}
+                    {counselor.hasPassword ? '암호 설정됨' : '저장 전'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {activeCounselor?.hasPassword && !isUnlocked ? (
             <form className="stack-form" onSubmit={handleUnlock}>
               <label>
                 암호
@@ -711,7 +958,7 @@ function App() {
               </label>
 
               <label>
-                {data.hasPassword ? '새 암호' : '암호 설정'}
+                {activeCounselor?.hasPassword ? '새 암호' : '암호 설정'}
                 <input
                   type="password"
                   value={newPassword}
@@ -728,7 +975,7 @@ function App() {
         </section>
 
         <section className="preview-column" aria-label="공개 프로필과 평가 영역">
-          <ProfilePreview profile={draft} reviews={data.reviews} />
+          <ProfilePreview profile={draft} reviews={activeReviews} />
 
           <section className="panel review-panel" aria-label="사용자 만족도 평가">
             <div className="panel-heading">
