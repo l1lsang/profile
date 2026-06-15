@@ -100,13 +100,13 @@ const clampRating = (value: unknown) => {
   return Math.min(5, Math.max(1, Math.round(safeValue)))
 }
 
-const cleanString = (value: unknown, fallback: string, maxLength: number) => {
+const cleanString = (value: unknown, fallback: string) => {
   if (typeof value !== 'string') {
     return fallback
   }
 
   const trimmed = value.trim()
-  return (trimmed || fallback).slice(0, maxLength)
+  return trimmed || fallback
 }
 
 const cleanList = (value: unknown, fallback: string[]) => {
@@ -118,7 +118,6 @@ const cleanList = (value: unknown, fallback: string[]) => {
     .filter((item): item is string => typeof item === 'string')
     .map((item) => item.trim())
     .filter(Boolean)
-    .slice(0, 8)
 
   return list.length ? list : fallback
 }
@@ -129,18 +128,18 @@ const sanitizeProfile = (value: unknown): CounselorProfile | null => {
   }
 
   return {
-    nickname: cleanString(value.nickname, '상담사', 40),
-    avatarEmoji: cleanString(value.avatarEmoji, '💬', 10),
+    nickname: cleanString(value.nickname, '상담사'),
+    avatarEmoji: cleanString(value.avatarEmoji, '💬'),
     empathy: clampRating(value.empathy),
     listening: clampRating(value.listening),
     atmosphere: cleanList(value.atmosphere, ['편안함']),
-    adviceStyle: cleanString(value.adviceStyle, '공감형', 60),
+    adviceStyle: cleanString(value.adviceStyle, '공감형'),
     specialties: cleanList(value.specialties, ['마음 상담']),
     methods: cleanList(value.methods, ['텍스트 상담']),
-    responseSpeed: cleanString(value.responseSpeed, '보통', 40),
-    intro: cleanString(value.intro, '천천히 들어드릴게요.', 360),
-    statusEmoji: cleanString(value.statusEmoji, '☁️', 10),
-    contactNote: cleanString(value.contactNote, '상담 가능', 100),
+    responseSpeed: cleanString(value.responseSpeed, '보통'),
+    intro: cleanString(value.intro, '천천히 들어드릴게요.'),
+    statusEmoji: cleanString(value.statusEmoji, '☁️'),
+    contactNote: cleanString(value.contactNote, '상담 가능'),
     updatedAt: new Date().toISOString(),
   }
 }
@@ -151,14 +150,14 @@ const sanitizeReview = (value: unknown): Review | null => {
   }
 
   return {
-    id: cleanString(value.id, `review-${Date.now()}`, 80),
+    id: cleanString(value.id, `review-${Date.now()}`),
     overall: clampRating(value.overall),
     empathy: clampRating(value.empathy),
     listening: clampRating(value.listening),
     comfort: clampRating(value.comfort),
-    emoji: cleanString(value.emoji, '😊', 10),
-    comment: cleanString(value.comment, '', 280),
-    createdAt: cleanString(value.createdAt, new Date().toISOString(), 40),
+    emoji: cleanString(value.emoji, '😊'),
+    comment: cleanString(value.comment, ''),
+    createdAt: cleanString(value.createdAt, new Date().toISOString()),
   }
 }
 
@@ -404,11 +403,6 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
 
       if (newPassword) {
-        if (newPassword.length < 4) {
-          res.status(400).json({ error: 'Password is too short' })
-          return
-        }
-
         nextPasswordHash = hashPassword(newPassword)
       }
 

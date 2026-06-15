@@ -443,13 +443,8 @@ function App() {
 
     const trimmedNewPassword = newPassword.trim()
 
-    if (!data.hasPassword && trimmedNewPassword.length < 4) {
-      setStatus('처음 저장할 때는 4자 이상 암호가 필요해요.')
-      return
-    }
-
-    if (trimmedNewPassword && trimmedNewPassword.length < 4) {
-      setStatus('새 암호는 4자 이상으로 설정해주세요.')
+    if (!data.hasPassword && !trimmedNewPassword) {
+      setStatus('처음 저장할 때는 암호가 필요해요.')
       return
     }
 
@@ -676,7 +671,6 @@ function App() {
                   <input
                     value={draft.statusEmoji}
                     onChange={(event) => updateDraft('statusEmoji', event.target.value)}
-                    maxLength={6}
                   />
                 </label>
               </div>
