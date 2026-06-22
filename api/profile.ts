@@ -32,6 +32,7 @@ type StoredCounselor = {
   profile: CounselorProfile
   reviews: Review[]
   passwordHash: string
+  isActive: boolean
 }
 
 type StoredData = {
@@ -143,6 +144,9 @@ const cleanList = (value: unknown, fallback: string[]) => {
   return list.length ? list : fallback
 }
 
+const cleanBoolean = (value: unknown, fallback = true) =>
+  typeof value === 'boolean' ? value : fallback
+
 const sanitizeProfile = (value: unknown): CounselorProfile | null => {
   if (!isRecord(value)) {
     return null
@@ -199,6 +203,7 @@ const sanitizeStoredCounselor = (value: unknown): StoredCounselor | null => {
     profile,
     reviews,
     passwordHash: typeof value.passwordHash === 'string' ? value.passwordHash : '',
+    isActive: cleanBoolean(value.isActive),
   }
 }
 
@@ -353,6 +358,7 @@ const readStoredData = async (config: FirebaseConfig): Promise<StoredData | null
               .filter((review): review is Review => Boolean(review))
           : [],
         passwordHash,
+        isActive: true,
       },
     ],
   }
@@ -411,7 +417,7 @@ const sendMethodNotAllowed = (res: ApiResponse) => {
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,OPTIONS')
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
   if (req.method === 'OPTIONS') {
@@ -519,6 +525,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         profile,
         reviews: existingCounselor?.reviews ?? [],
         passwordHash: nextPasswordHash,
+        isActive: cleanBoolean(body.isActive, existingCounselor?.isActive ?? true),
       }
       const nextData: StoredData = {
         counselors:
@@ -527,6 +534,38 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
                 index === counselorIndex ? nextCounselor : counselor,
               )
             : [...storedData.counselors, nextCounselor],
+      }
+
+      await writeStoredData(config, nextData)
+      res.status(200).json(toPublicPayload(nextData))
+      return
+    }
+
+    if (req.method === 'DELETE') {
+      const body = parseBody(req.body)
+      const storedData = await readStoredData(config)
+      const counselorIndex = findCounselorIndex(storedData, body.counselorId)
+
+      if (!storedData || counselorIndex < 0) {
+        res.status(404).json({ error: 'Counselor not found' })
+        return
+      }
+
+      if (storedData.counselors.length <= 1) {
+        res.status(409).json({ error: 'At least one counselor is required' })
+        return
+      }
+
+      const password = typeof body.password === 'string' ? body.password : ''
+      const passwordHash = storedData.counselors[counselorIndex].passwordHash
+
+      if (passwordHash && hashPassword(password) !== passwordHash) {
+        res.status(401).json({ error: 'Invalid password' })
+        return
+      }
+
+      const nextData: StoredData = {
+        counselors: storedData.counselors.filter((_, index) => index !== counselorIndex),
       }
 
       await writeStoredData(config, nextData)
