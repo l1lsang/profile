@@ -1,4 +1,10 @@
-import { createHash, createSign } from 'node:crypto'
+import {
+  createHash,
+  createSign,
+  pbkdf2Sync,
+  randomBytes,
+  timingSafeEqual,
+} from 'node:crypto'
 
 type CounselorProfile = {
   nickname: string
@@ -37,6 +43,7 @@ type StoredCounselor = {
 
 type StoredData = {
   counselors: StoredCounselor[]
+  adminPasswordHash: string
 }
 
 type FirebaseConfig = {
@@ -64,6 +71,8 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token'
 const FIRESTORE_SCOPE = 'https://www.googleapis.com/auth/datastore'
 const DOCUMENT_PATH = 'counselorProfiles/main'
 const MAX_REVIEWS = 200
+const ADMIN_PASSWORD_ITERATIONS = 120_000
+const ADMIN_PASSWORD_KEY_LENGTH = 32
 
 let cachedToken = {
   value: '',
@@ -115,6 +124,47 @@ const makeDefaultProfile = (): CounselorProfile => ({
 
 const hashPassword = (password: string) =>
   createHash('sha256').update(password, 'utf8').digest('hex')
+
+const hashAdminPassword = (password: string) => {
+  const salt = randomBytes(16)
+  const hash = pbkdf2Sync(
+    password,
+    salt,
+    ADMIN_PASSWORD_ITERATIONS,
+    ADMIN_PASSWORD_KEY_LENGTH,
+    'sha256',
+  )
+
+  return `pbkdf2$${ADMIN_PASSWORD_ITERATIONS}$${salt.toString('hex')}$${hash.toString('hex')}`
+}
+
+const verifyAdminPassword = (password: unknown, storedHash: string) => {
+  if (typeof password !== 'string' || !storedHash) {
+    return false
+  }
+
+  const [algorithm, iterationsText, saltHex, expectedHex] = storedHash.split('$')
+  const iterations = Number(iterationsText)
+
+  if (
+    algorithm !== 'pbkdf2' ||
+    !Number.isSafeInteger(iterations) ||
+    iterations < 100_000 ||
+    iterations > 1_000_000 ||
+    !saltHex ||
+    !expectedHex
+  ) {
+    return false
+  }
+
+  try {
+    const expected = Buffer.from(expectedHex, 'hex')
+    const actual = pbkdf2Sync(password, Buffer.from(saltHex, 'hex'), iterations, expected.length, 'sha256')
+    return expected.length > 0 && actual.length === expected.length && timingSafeEqual(actual, expected)
+  } catch {
+    return false
+  }
+}
 
 const clampRating = (value: unknown) => {
   const numberValue = typeof value === 'number' ? value : Number(value)
@@ -324,12 +374,17 @@ const readStoredData = async (config: FirebaseConfig): Promise<StoredData | null
   const document = (await response.json()) as UnknownRecord
   const fields = isRecord(document.fields) ? document.fields : {}
   const counselorsJson = parseJsonField<unknown[]>(fields.counselorsJson, [])
+  const adminPasswordHash =
+    isRecord(fields.adminPasswordHash) && typeof fields.adminPasswordHash.stringValue === 'string'
+      ? fields.adminPasswordHash.stringValue
+      : ''
 
   if (Array.isArray(counselorsJson) && counselorsJson.length) {
     return {
       counselors: counselorsJson
         .map((counselor) => sanitizeStoredCounselor(counselor))
         .filter((counselor): counselor is StoredCounselor => Boolean(counselor)),
+      adminPasswordHash,
     }
   }
 
@@ -344,6 +399,7 @@ const readStoredData = async (config: FirebaseConfig): Promise<StoredData | null
   if (!profile) {
     return {
       counselors: [],
+      adminPasswordHash,
     }
   }
 
@@ -361,6 +417,7 @@ const readStoredData = async (config: FirebaseConfig): Promise<StoredData | null
         isActive: true,
       },
     ],
+    adminPasswordHash,
   }
 }
 
@@ -374,6 +431,9 @@ const writeStoredData = async (config: FirebaseConfig, data: StoredData) => {
             reviews: counselor.reviews.slice(0, MAX_REVIEWS),
           })),
         ),
+      },
+      adminPasswordHash: {
+        stringValue: data.adminPasswordHash,
       },
       updatedAt: {
         timestampValue: new Date().toISOString(),
@@ -396,6 +456,7 @@ const toPublicPayload = (data: StoredData | null) => {
   return {
     counselors,
     activeCounselorId: counselors[0]?.id ?? '',
+    adminConfigured: Boolean(data?.adminPasswordHash),
   }
 }
 
@@ -416,7 +477,6 @@ const sendMethodNotAllowed = (res: ApiResponse) => {
 }
 
 export default async function handler(req: ApiRequest, res: ApiResponse) {
-  res.setHeader('Access-Control-Allow-Origin', '*')
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
 
@@ -443,6 +503,40 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const body = parseBody(req.body)
       const storedData = await readStoredData(config)
 
+      if (body.type === 'admin-register') {
+        if (storedData?.adminPasswordHash) {
+          res.status(409).json({ error: 'Admin password is already configured' })
+          return
+        }
+
+        const password = typeof body.password === 'string' ? body.password : ''
+
+        if (password.length < 8) {
+          res.status(400).json({ error: 'Admin password must be at least 8 characters' })
+          return
+        }
+
+        const nextData: StoredData = {
+          counselors: storedData?.counselors ?? [],
+          adminPasswordHash: hashAdminPassword(password),
+        }
+
+        await writeStoredData(config, nextData)
+        res.status(201).json({ ok: true, adminConfigured: true })
+        return
+      }
+
+      if (body.type === 'admin-login') {
+        if (!storedData?.adminPasswordHash) {
+          res.status(409).json({ error: 'Admin password is not configured' })
+          return
+        }
+
+        const ok = verifyAdminPassword(body.password, storedData.adminPasswordHash)
+        res.status(ok ? 200 : 401).json({ ok })
+        return
+      }
+
       if (body.type === 'unlock') {
         const counselorIndex = findCounselorIndex(storedData, body.counselorId)
 
@@ -468,6 +562,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         }
 
         const nextData: StoredData = {
+          adminPasswordHash: storedData.adminPasswordHash,
           counselors: storedData.counselors.map((counselor, index) =>
             index === counselorIndex
               ? {
@@ -497,16 +592,25 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         return
       }
 
-      const storedData = (await readStoredData(config)) ?? { counselors: [] }
+      const storedData = (await readStoredData(config)) ?? {
+        counselors: [],
+        adminPasswordHash: '',
+      }
       const counselorIndex = findCounselorIndex(storedData, counselorId)
       const existingCounselor =
         counselorIndex >= 0 ? storedData.counselors[counselorIndex] : null
       const currentHash = existingCounselor?.passwordHash ?? ''
       const password = typeof body.password === 'string' ? body.password : ''
       const newPassword = typeof body.newPassword === 'string' ? body.newPassword.trim() : ''
+      const isAdminAuthorized = verifyAdminPassword(body.adminPassword, storedData.adminPasswordHash)
+      const isCounselorAuthorized = Boolean(currentHash) && hashPassword(password) === currentHash
       let nextPasswordHash = currentHash
 
-      if (currentHash && hashPassword(password) !== currentHash) {
+      const isUpdateDenied = storedData.adminPasswordHash
+        ? !isAdminAuthorized && !isCounselorAuthorized
+        : Boolean(currentHash) && !isCounselorAuthorized
+
+      if (isUpdateDenied) {
         res.status(401).json({ error: 'Invalid password' })
         return
       }
@@ -515,7 +619,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         nextPasswordHash = hashPassword(newPassword)
       }
 
-      if (!nextPasswordHash) {
+      if (!nextPasswordHash && !isAdminAuthorized) {
         res.status(400).json({ error: 'Password is required' })
         return
       }
@@ -528,6 +632,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         isActive: cleanBoolean(body.isActive, existingCounselor?.isActive ?? true),
       }
       const nextData: StoredData = {
+        adminPasswordHash: storedData.adminPasswordHash,
         counselors:
           counselorIndex >= 0
             ? storedData.counselors.map((counselor, index) =>
@@ -551,20 +656,21 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
         return
       }
 
-      if (storedData.counselors.length <= 1) {
-        res.status(409).json({ error: 'At least one counselor is required' })
-        return
-      }
-
       const password = typeof body.password === 'string' ? body.password : ''
       const passwordHash = storedData.counselors[counselorIndex].passwordHash
+      const isAdminAuthorized = verifyAdminPassword(body.adminPassword, storedData.adminPasswordHash)
+      const isCounselorAuthorized = Boolean(passwordHash) && hashPassword(password) === passwordHash
+      const isDeleteDenied = storedData.adminPasswordHash
+        ? !isAdminAuthorized && !isCounselorAuthorized
+        : Boolean(passwordHash) && !isCounselorAuthorized
 
-      if (passwordHash && hashPassword(password) !== passwordHash) {
+      if (isDeleteDenied) {
         res.status(401).json({ error: 'Invalid password' })
         return
       }
 
       const nextData: StoredData = {
+        adminPasswordHash: storedData.adminPasswordHash,
         counselors: storedData.counselors.filter((_, index) => index !== counselorIndex),
       }
 

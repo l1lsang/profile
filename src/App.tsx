@@ -48,6 +48,7 @@ type LocalCounselor = Counselor & {
 type LocalPayload = {
   counselors: LocalCounselor[]
   activeCounselorId: string
+  adminPasswordHash?: string
 }
 
 type LegacyLocalPayload = {
@@ -63,6 +64,7 @@ type RemotePayload = {
   profile?: CounselorProfile | null
   reviews?: Review[]
   hasPassword?: boolean
+  adminConfigured?: boolean
 }
 
 type ListField = 'atmosphere' | 'specialties' | 'methods'
@@ -82,8 +84,11 @@ type IconName =
   | 'check'
   | 'trash'
   | 'close'
+  | 'shield'
 
 const LOCAL_STORAGE_KEY = 'counselor-profile-data-v1'
+const ADMIN_PASSWORD_ITERATIONS = 120_000
+const ADMIN_PASSWORD_KEY_LENGTH = 32
 const emojiOptions = ['🌤️', '🌿', '🫶', '☕', '💬', '✨']
 const ratingSteps = [1, 2, 3, 4, 5]
 const counselorFilters: { value: CounselorFilter; label: string }[] = [
@@ -185,6 +190,57 @@ const hashPassword = async (password: string) => {
     .join('')
 }
 
+const bytesToHex = (bytes: Uint8Array) =>
+  Array.from(bytes)
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('')
+
+const hexToBytes = (value: string) => {
+  if (!/^[\da-f]+$/i.test(value) || value.length % 2 !== 0) return null
+  return new Uint8Array(value.match(/.{2}/g)?.map((byte) => Number.parseInt(byte, 16)) ?? [])
+}
+
+const deriveAdminPassword = async (password: string, salt: Uint8Array, iterations: number) => {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(password),
+    'PBKDF2',
+    false,
+    ['deriveBits'],
+  )
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: new Uint8Array(salt).buffer, iterations, hash: 'SHA-256' },
+    key,
+    ADMIN_PASSWORD_KEY_LENGTH * 8,
+  )
+  return new Uint8Array(bits)
+}
+
+const hashAdminPasswordLocal = async (password: string) => {
+  const salt = crypto.getRandomValues(new Uint8Array(16))
+  const hash = await deriveAdminPassword(password, salt, ADMIN_PASSWORD_ITERATIONS)
+  return `pbkdf2$${ADMIN_PASSWORD_ITERATIONS}$${bytesToHex(salt)}$${bytesToHex(hash)}`
+}
+
+const verifyAdminPasswordLocal = async (password: string, storedHash: string) => {
+  const [algorithm, iterationsText, saltHex, expectedHex] = storedHash.split('$')
+  const iterations = Number(iterationsText)
+  const salt = hexToBytes(saltHex ?? '')
+
+  if (
+    algorithm !== 'pbkdf2' ||
+    !Number.isSafeInteger(iterations) ||
+    iterations < 100_000 ||
+    iterations > 1_000_000 ||
+    !salt
+  ) {
+    return false
+  }
+
+  const actual = await deriveAdminPassword(password, salt, iterations)
+  return bytesToHex(actual) === expectedHex
+}
+
 const readLocalData = (): LegacyLocalPayload | LocalPayload | null => {
   try {
     const raw = localStorage.getItem(LOCAL_STORAGE_KEY)
@@ -208,14 +264,14 @@ const makeDataFromRemote = (
   remote: RemotePayload,
   preferredCounselorId?: string,
 ): AppData => {
-  if (remote.counselors?.length) {
+  if (remote.counselors) {
     const counselors = normalizeCounselors(remote.counselors)
     const activeCounselorId =
       preferredCounselorId && counselors.some((item) => item.id === preferredCounselorId)
         ? preferredCounselorId
         : remote.activeCounselorId && counselors.some((item) => item.id === remote.activeCounselorId)
           ? remote.activeCounselorId
-          : counselors[0].id
+          : counselors[0]?.id ?? ''
 
     return { counselors, activeCounselorId }
   }
@@ -231,8 +287,8 @@ const makeDataFromRemote = (
 
 const makeDataFromLocal = (
   local: LegacyLocalPayload | LocalPayload | null,
-): { data: AppData; passwordHashes: Record<string, string> } => {
-  if (!local) return { data: makeDefaultData(), passwordHashes: {} }
+): { data: AppData; passwordHashes: Record<string, string>; adminPasswordHash: string } => {
+  if (!local) return { data: makeDefaultData(), passwordHashes: {}, adminPasswordHash: '' }
 
   if (isLocalPayload(local)) {
     const counselors = local.counselors.map(({ passwordHash, ...counselor }) => ({
@@ -240,17 +296,17 @@ const makeDataFromLocal = (
       hasPassword: Boolean(passwordHash),
       isActive: counselor.isActive !== false,
     }))
-    const fallbackData = makeDefaultData()
     const activeCounselorId =
       local.activeCounselorId && counselors.some((item) => item.id === local.activeCounselorId)
         ? local.activeCounselorId
-        : counselors[0]?.id
+        : counselors[0]?.id ?? ''
 
     return {
-      data: counselors.length ? { counselors, activeCounselorId } : fallbackData,
+      data: { counselors, activeCounselorId },
       passwordHashes: Object.fromEntries(
         local.counselors.map((counselor) => [counselor.id, counselor.passwordHash]),
       ),
+      adminPasswordHash: local.adminPasswordHash ?? '',
     }
   }
 
@@ -258,12 +314,18 @@ const makeDataFromLocal = (
   return {
     data: { counselors: [counselor], activeCounselorId: counselor.id },
     passwordHashes: { [counselor.id]: local.passwordHash },
+    adminPasswordHash: '',
   }
 }
 
-const writeLocalData = (data: AppData, passwordHashes: Record<string, string>) => {
+const writeLocalData = (
+  data: AppData,
+  passwordHashes: Record<string, string>,
+  adminPasswordHash: string,
+) => {
   const payload: LocalPayload = {
     activeCounselorId: data.activeCounselorId,
+    adminPasswordHash,
     counselors: data.counselors.map((counselor) => ({
       ...counselor,
       hasPassword: Boolean(passwordHashes[counselor.id]),
@@ -301,6 +363,7 @@ function Icon({ name, size = 18 }: { name: IconName; size?: number }) {
     check: <path d="m5 12 4 4L19 6"/>,
     trash: <><path d="M3 6h18M8 6V4h8v2M19 6l-1 15H6L5 6M10 11v5M14 11v5"/></>,
     close: <><path d="m6 6 12 12M18 6 6 18"/></>,
+    shield: <><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-4"/></>,
   }
 
   return (
@@ -380,11 +443,22 @@ function App() {
   const [filter, setFilter] = useState<CounselorFilter>('all')
   const [isEditorOpen, setIsEditorOpen] = useState(false)
   const [unsavedCounselorIds, setUnsavedCounselorIds] = useState<Set<string>>(() => new Set())
+  const [isAdminConfigured, setIsAdminConfigured] = useState(false)
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false)
+  const [adminCredential, setAdminCredential] = useState('')
+  const [adminPasswordInput, setAdminPasswordInput] = useState('')
+  const [adminPasswordConfirm, setAdminPasswordConfirm] = useState('')
+  const [adminError, setAdminError] = useState('')
+  const [isAdminSubmitting, setIsAdminSubmitting] = useState(false)
+  const [localAdminPasswordHash, setLocalAdminPasswordHash] = useState('')
 
   const activeCounselor =
     data.counselors.find((counselor) => counselor.id === data.activeCounselorId) ?? data.counselors[0]
   const activeCounselorId = activeCounselor?.id ?? ''
-  const isUnlocked = !activeCounselor?.hasPassword || Boolean(confirmedPasswords[activeCounselorId])
+  const isUnlocked =
+    isAdminAuthenticated ||
+    !activeCounselor?.hasPassword ||
+    Boolean(confirmedPasswords[activeCounselorId])
 
   const filteredCounselors = useMemo(() => {
     const query = searchTerm.trim().toLocaleLowerCase('ko-KR')
@@ -421,22 +495,33 @@ function App() {
         const nextData = makeDataFromRemote(remote)
         const nextCounselor = nextData.counselors.find((item) => item.id === nextData.activeCounselorId) ?? nextData.counselors[0]
         setData(nextData)
-        setDraft(nextCounselor.profile)
-        setDraftIsActive(nextCounselor.isActive)
-        setListTexts(profileToListTexts(nextCounselor.profile))
+        if (nextCounselor) {
+          setDraft(nextCounselor.profile)
+          setDraftIsActive(nextCounselor.isActive)
+          setListTexts(profileToListTexts(nextCounselor.profile))
+        }
         setIsRemoteReady(true)
+        setIsAdminConfigured(Boolean(remote.adminConfigured))
         setStatus('모든 변경사항이 안전하게 동기화됐어요.')
         setIsLoading(false)
         return
       }
 
-      const { data: nextData, passwordHashes } = makeDataFromLocal(readLocalData())
+      const {
+        data: nextData,
+        passwordHashes,
+        adminPasswordHash,
+      } = makeDataFromLocal(readLocalData())
       const nextCounselor = nextData.counselors.find((item) => item.id === nextData.activeCounselorId) ?? nextData.counselors[0]
       setData(nextData)
-      setDraft(nextCounselor.profile)
-      setDraftIsActive(nextCounselor.isActive)
-      setListTexts(profileToListTexts(nextCounselor.profile))
+      if (nextCounselor) {
+        setDraft(nextCounselor.profile)
+        setDraftIsActive(nextCounselor.isActive)
+        setListTexts(profileToListTexts(nextCounselor.profile))
+      }
       setLocalPasswordHashes(passwordHashes)
+      setLocalAdminPasswordHash(adminPasswordHash)
+      setIsAdminConfigured(Boolean(adminPasswordHash))
       setStatus('로컬 저장 모드로 실행 중이에요.')
       setIsLoading(false)
     }
@@ -444,6 +529,80 @@ function App() {
     hydrate()
     return () => { isActive = false }
   }, [])
+
+  const handleAdminAccess = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const password = adminPasswordInput.trim()
+    setAdminError('')
+
+    if (password.length < 8) {
+      setAdminError('비밀번호를 8자 이상 입력해주세요.')
+      return
+    }
+
+    if (!isAdminConfigured && password !== adminPasswordConfirm.trim()) {
+      setAdminError('비밀번호 확인이 일치하지 않아요.')
+      return
+    }
+
+    setIsAdminSubmitting(true)
+
+    try {
+      if (!isAdminConfigured) {
+        if (isRemoteReady) {
+          const result = await requestJson<{ ok: boolean; adminConfigured: boolean }>('/api/profile', {
+            method: 'POST',
+            body: JSON.stringify({ type: 'admin-register', password }),
+          })
+
+          if (!result?.ok) {
+            setAdminError('관리자 비밀번호를 등록하지 못했어요. 새로고침 후 다시 시도해주세요.')
+            return
+          }
+        } else {
+          const nextHash = await hashAdminPasswordLocal(password)
+          writeLocalData(data, localPasswordHashes, nextHash)
+          setLocalAdminPasswordHash(nextHash)
+        }
+
+        setIsAdminConfigured(true)
+        setStatus('관리자 비밀번호가 등록됐어요.')
+      } else {
+        const isValid = isRemoteReady
+          ? Boolean(
+              (await requestJson<{ ok: boolean }>('/api/profile', {
+                method: 'POST',
+                body: JSON.stringify({ type: 'admin-login', password }),
+              }))?.ok,
+            )
+          : await verifyAdminPasswordLocal(password, localAdminPasswordHash)
+
+        if (!isValid) {
+          setAdminError('비밀번호가 맞지 않아요. 다시 확인해주세요.')
+          return
+        }
+
+        setStatus('관리자 계정으로 로그인했어요.')
+      }
+
+      setAdminCredential(password)
+      setIsAdminAuthenticated(true)
+      setAdminPasswordInput('')
+      setAdminPasswordConfirm('')
+    } finally {
+      setIsAdminSubmitting(false)
+    }
+  }
+
+  const handleAdminLogout = () => {
+    setAdminCredential('')
+    setIsAdminAuthenticated(false)
+    setConfirmedPasswords({})
+    setIsEditorOpen(false)
+    setAdminPasswordInput('')
+    setAdminPasswordConfirm('')
+    setAdminError('')
+  }
 
   const updateDraft = <Key extends keyof CounselorProfile>(key: Key, value: CounselorProfile[Key]) => {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -533,11 +692,6 @@ function App() {
     }
 
     const trimmedNewPassword = newPassword.trim()
-    if (!activeCounselor?.hasPassword && !trimmedNewPassword) {
-      setStatus('처음 저장할 때는 편집용 암호를 설정해주세요.')
-      return
-    }
-
     const profile = normalizeProfile(draft)
     if (isRemoteReady) {
       const remote = await requestJson<RemotePayload>('/api/profile', {
@@ -546,6 +700,7 @@ function App() {
           counselorId: activeCounselorId,
           profile,
           isActive: draftIsActive,
+          adminPassword: adminCredential,
           password: confirmedPasswords[activeCounselorId] ?? '',
           newPassword: trimmedNewPassword,
         }),
@@ -586,7 +741,7 @@ function App() {
       ),
     }
     const nextPasswordHashes = { ...localPasswordHashes, [activeCounselorId]: nextPasswordHash }
-    writeLocalData(nextData, nextPasswordHashes)
+    writeLocalData(nextData, nextPasswordHashes, localAdminPasswordHash)
     setData(nextData)
     setUnsavedCounselorIds((current) => {
       const next = new Set(current)
@@ -605,22 +760,18 @@ function App() {
 
   const handleDelete = async () => {
     if (!activeCounselor) return
-    if (data.counselors.length === 1) {
-      setStatus('최소 한 명의 상담사는 남아 있어야 해요.')
-      return
-    }
     if (!window.confirm(`${activeCounselor.profile.nickname} 상담사를 목록에서 삭제할까요?\n이 상담사의 후기 데이터도 함께 삭제됩니다.`)) return
 
     if (unsavedCounselorIds.has(activeCounselorId)) {
       const nextCounselors = data.counselors.filter((item) => item.id !== activeCounselorId)
-      const nextData = { counselors: nextCounselors, activeCounselorId: nextCounselors[0].id }
+      const nextData = { counselors: nextCounselors, activeCounselorId: nextCounselors[0]?.id ?? '' }
       setData(nextData)
       setUnsavedCounselorIds((current) => {
         const next = new Set(current)
         next.delete(activeCounselorId)
         return next
       })
-      loadCounselorIntoEditor(nextCounselors[0])
+      if (nextCounselors[0]) loadCounselorIntoEditor(nextCounselors[0])
       setIsEditorOpen(false)
       setStatus('저장 전 상담사를 목록에서 제거했어요.')
       return
@@ -631,6 +782,7 @@ function App() {
         method: 'DELETE',
         body: JSON.stringify({
           counselorId: activeCounselorId,
+          adminPassword: adminCredential,
           password: confirmedPasswords[activeCounselorId] ?? '',
         }),
       })
@@ -641,22 +793,110 @@ function App() {
       const nextData = makeDataFromRemote(remote)
       const nextCounselor = nextData.counselors[0]
       setData(nextData)
-      loadCounselorIntoEditor(nextCounselor)
+      if (nextCounselor) loadCounselorIntoEditor(nextCounselor)
       setIsEditorOpen(false)
       setStatus('상담사를 삭제했어요.')
       return
     }
 
     const nextCounselors = data.counselors.filter((item) => item.id !== activeCounselorId)
-    const nextData = { counselors: nextCounselors, activeCounselorId: nextCounselors[0].id }
+    const nextData = { counselors: nextCounselors, activeCounselorId: nextCounselors[0]?.id ?? '' }
     const nextHashes = { ...localPasswordHashes }
     delete nextHashes[activeCounselorId]
-    writeLocalData(nextData, nextHashes)
+    writeLocalData(nextData, nextHashes, localAdminPasswordHash)
     setData(nextData)
     setLocalPasswordHashes(nextHashes)
-    loadCounselorIntoEditor(nextCounselors[0])
+    if (nextCounselors[0]) loadCounselorIntoEditor(nextCounselors[0])
     setIsEditorOpen(false)
     setStatus('상담사를 삭제했어요.')
+  }
+
+  if (!isAdminAuthenticated) {
+    return (
+      <main className="access-page">
+        <div className="access-ambient access-ambient-one" />
+        <div className="access-ambient access-ambient-two" />
+        <section className="access-card" aria-labelledby="admin-access-title">
+          <div className="access-brand">
+            <span className="brand-mark">온</span>
+            <div><strong>온마음</strong><small>관리자 콘솔</small></div>
+          </div>
+
+          {isLoading ? (
+            <div className="access-loading" aria-live="polite">
+              <span className="loading-spinner" />
+              <strong>관리자 설정 확인 중</strong>
+              <p>안전한 접속을 준비하고 있어요.</p>
+            </div>
+          ) : (
+            <>
+              <span className="access-icon"><Icon name="shield" size={25} /></span>
+              <p className="access-eyebrow">
+                {isAdminConfigured ? 'ADMIN SIGN IN' : 'FIRST ADMIN SETUP'}
+              </p>
+              <h1 id="admin-access-title">
+                {isAdminConfigured ? '관리자 로그인' : '관리자 비밀번호 등록'}
+              </h1>
+              <p className="access-description">
+                {isAdminConfigured
+                  ? '상담사 정보를 관리하려면 관리자 비밀번호를 입력해주세요.'
+                  : '처음 한 번 사용할 관리자 전용 비밀번호를 만들어주세요.'}
+              </p>
+
+              <form className="access-form" onSubmit={handleAdminAccess}>
+                <label>
+                  관리자 비밀번호
+                  <input
+                    type="password"
+                    value={adminPasswordInput}
+                    onChange={(event) => setAdminPasswordInput(event.target.value)}
+                    autoComplete={isAdminConfigured ? 'current-password' : 'new-password'}
+                    minLength={8}
+                    placeholder="8자 이상 입력"
+                    autoFocus
+                    required
+                  />
+                </label>
+
+                {!isAdminConfigured && (
+                  <label>
+                    비밀번호 확인
+                    <input
+                      type="password"
+                      value={adminPasswordConfirm}
+                      onChange={(event) => setAdminPasswordConfirm(event.target.value)}
+                      autoComplete="new-password"
+                      minLength={8}
+                      placeholder="한 번 더 입력"
+                      required
+                    />
+                  </label>
+                )}
+
+                <p className="password-hint">
+                  <Icon name="lock" size={14} /> 비밀번호는 암호화되어 저장되며 화면에 표시되지 않아요.
+                </p>
+                {adminError && <p className="access-error" role="alert">{adminError}</p>}
+                <button className="access-submit" type="submit" disabled={isAdminSubmitting}>
+                  {isAdminSubmitting
+                    ? '확인 중...'
+                    : isAdminConfigured
+                      ? '관리자 계정으로 들어가기'
+                      : '비밀번호 등록하고 시작하기'}
+                  {!isAdminSubmitting && <Icon name="chevron" size={17} />}
+                </button>
+              </form>
+
+              <div className="access-source">
+                <span className={isRemoteReady ? 'remote' : 'local'} />
+                {isRemoteReady ? 'Firebase 보안 저장소 연결됨' : '로컬 저장 모드'}
+              </div>
+            </>
+          )}
+        </section>
+        <p className="access-footer">© 2026 온마음 · 승인된 관리자만 접근할 수 있습니다.</p>
+      </main>
+    )
   }
 
   return (
@@ -675,8 +915,10 @@ function App() {
         </nav>
         <div className="sidebar-account">
           <div className="account-avatar">관</div>
-          <div><strong>운영 관리자</strong><small>admin@onmaum.kr</small></div>
-          <Icon name="logout" />
+          <div><strong>운영 관리자</strong><small>관리자 로그인됨</small></div>
+          <button className="logout-button" type="button" onClick={handleAdminLogout} aria-label="관리자 로그아웃">
+            <Icon name="logout" />
+          </button>
         </div>
       </aside>
 
@@ -745,7 +987,13 @@ function App() {
                   })}
                 </tbody>
               </table>
-              {!filteredCounselors.length && <div className="no-results"><span>🔎</span><strong>검색 결과가 없어요</strong><p>검색어나 활동 상태를 다시 확인해주세요.</p></div>}
+              {!filteredCounselors.length && (
+                <div className="no-results">
+                  <span>{data.counselors.length ? '🔎' : '📋'}</span>
+                  <strong>{data.counselors.length ? '검색 결과가 없어요' : '등록된 상담사가 없어요'}</strong>
+                  <p>{data.counselors.length ? '검색어나 활동 상태를 다시 확인해주세요.' : '상단의 새 상담사 등록 버튼으로 시작해주세요.'}</p>
+                </div>
+              )}
             </div>
           </section>
 
@@ -802,7 +1050,10 @@ function App() {
 
                   <section className="drawer-section form-section">
                     <h3>보안</h3>
-                    <label>{activeCounselor.hasPassword ? '새 암호 (변경할 때만 입력)' : '편집용 암호'}<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" placeholder={activeCounselor.hasPassword ? '변경하지 않음' : '필수 입력'} /></label>
+                    <label>
+                      상담사별 편집 암호 <small>관리자 비밀번호와 별개이며 선택 사항이에요</small>
+                      <input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} autoComplete="new-password" placeholder={activeCounselor.hasPassword ? '변경할 때만 입력' : '설정하지 않음'} />
+                    </label>
                   </section>
 
                   <div className="drawer-actions">
