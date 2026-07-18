@@ -28,6 +28,8 @@ type Review = {
   createdAt: string
 }
 
+type ReviewDraft = Omit<Review, 'id' | 'createdAt'>
+
 type Counselor = {
   id: string
   profile: CounselorProfile
@@ -90,6 +92,7 @@ const LOCAL_STORAGE_KEY = 'counselor-profile-data-v1'
 const ADMIN_PASSWORD_ITERATIONS = 120_000
 const ADMIN_PASSWORD_KEY_LENGTH = 32
 const emojiOptions = ['🌤️', '🌿', '🫶', '☕', '💬', '✨']
+const reviewEmojiOptions = ['😊', '🫶', '🌿', '✨', '💛']
 const ratingSteps = [1, 2, 3, 4, 5]
 const counselorFilters: { value: CounselorFilter; label: string }[] = [
   { value: 'all', label: '전체' },
@@ -115,6 +118,9 @@ const makeDefaultProfile = (): CounselorProfile => ({
 
 const makeCounselorId = (): string =>
   globalThis.crypto?.randomUUID?.() ?? `counselor-${Date.now()}-${Math.random()}`
+
+const makeReviewId = (): string =>
+  globalThis.crypto?.randomUUID?.() ?? `review-${Date.now()}-${Math.random()}`
 
 const makeCounselor = (
   profile: CounselorProfile = makeDefaultProfile(),
@@ -402,6 +408,118 @@ function RatingButtons({
   )
 }
 
+function PublicReviewForm({
+  counselorName,
+  onSubmit,
+}: {
+  counselorName: string
+  onSubmit: (review: ReviewDraft) => Promise<boolean>
+}) {
+  const [review, setReview] = useState<ReviewDraft>({
+    overall: 5,
+    empathy: 5,
+    listening: 5,
+    comfort: 5,
+    emoji: '😊',
+    comment: '',
+  })
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [feedback, setFeedback] = useState('')
+  const [hasError, setHasError] = useState(false)
+
+  const updateRating = (
+    key: keyof Pick<ReviewDraft, 'overall' | 'empathy' | 'listening' | 'comfort'>,
+    value: number,
+  ) => {
+    setReview((current) => ({ ...current, [key]: value }))
+  }
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const comment = review.comment.trim()
+    setFeedback('')
+    setHasError(false)
+
+    if (comment.length < 2) {
+      setFeedback('후기를 2자 이상 입력해주세요.')
+      setHasError(true)
+      return
+    }
+
+    setIsSubmitting(true)
+    let didSubmit: boolean
+    try {
+      didSubmit = await onSubmit({ ...review, comment })
+    } catch {
+      didSubmit = false
+    } finally {
+      setIsSubmitting(false)
+    }
+
+    if (!didSubmit) {
+      setFeedback('후기를 등록하지 못했어요. 잠시 후 다시 시도해주세요.')
+      setHasError(true)
+      return
+    }
+
+    setReview({ overall: 5, empathy: 5, listening: 5, comfort: 5, emoji: '😊', comment: '' })
+    setFeedback('후기가 등록됐어요. 소중한 마음을 나눠주셔서 감사해요.')
+  }
+
+  return (
+    <form className="public-review-form" onSubmit={handleSubmit}>
+      <div className="public-review-form-heading">
+        <div><h3>{counselorName} 상담사에게 후기 남기기</h3><p>로그인 없이 누구나 익명으로 작성할 수 있어요.</p></div>
+        <span aria-hidden="true">✍️</span>
+      </div>
+
+      <div className="public-review-ratings">
+        <RatingButtons label="전체 만족도" value={review.overall} onChange={(value) => updateRating('overall', value)} />
+        <RatingButtons label="공감" value={review.empathy} onChange={(value) => updateRating('empathy', value)} />
+        <RatingButtons label="경청" value={review.listening} onChange={(value) => updateRating('listening', value)} />
+        <RatingButtons label="편안함" value={review.comfort} onChange={(value) => updateRating('comfort', value)} />
+      </div>
+
+      <fieldset className="public-review-emojis">
+        <legend>상담을 표현하는 이모지</legend>
+        <div>
+          {reviewEmojiOptions.map((emoji) => (
+            <button
+              key={emoji}
+              type="button"
+              className={review.emoji === emoji ? 'is-selected' : ''}
+              onClick={() => setReview((current) => ({ ...current, emoji }))}
+              aria-pressed={review.emoji === emoji}
+              aria-label={`${emoji} 선택`}
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
+      </fieldset>
+
+      <label className="public-review-comment">
+        후기 내용
+        <textarea
+          rows={5}
+          value={review.comment}
+          onChange={(event) => setReview((current) => ({ ...current, comment: event.target.value }))}
+          placeholder="상담에서 어떤 점이 좋았는지 편하게 남겨주세요."
+          minLength={2}
+          maxLength={1000}
+          required
+        />
+        <small>{review.comment.length} / 1000자</small>
+      </label>
+
+      <div className="public-review-form-footer">
+        <p className={hasError ? 'is-error' : ''} role={hasError ? 'alert' : 'status'} aria-live="polite">{feedback}</p>
+        <button type="submit" disabled={isSubmitting}>{isSubmitting ? '등록 중...' : '익명으로 후기 등록'}</button>
+      </div>
+    </form>
+  )
+}
+
 function SummaryCard({
   icon,
   label,
@@ -434,6 +552,7 @@ function PublicProfiles({
   selectedCounselorId,
   onSelectCounselor,
   onBackToDirectory,
+  onSubmitReview,
 }: {
   counselors: Counselor[]
   isLoading: boolean
@@ -441,6 +560,7 @@ function PublicProfiles({
   selectedCounselorId: string
   onSelectCounselor: (counselorId: string) => void
   onBackToDirectory: () => void
+  onSubmitReview: (counselorId: string, review: ReviewDraft) => Promise<boolean>
 }) {
   const visibleCounselors = counselors.filter((counselor) => counselor.isActive)
   const selectedCounselor = visibleCounselors.find((counselor) => counselor.id === selectedCounselorId)
@@ -501,6 +621,12 @@ function PublicProfiles({
                   <div><p>COUNSELOR REVIEWS</p><h2 id="public-reviews-title">상담 후기</h2></div>
                   <strong>{selectedCounselor.reviews.length}개</strong>
                 </div>
+
+                <PublicReviewForm
+                  key={selectedCounselor.id}
+                  counselorName={selectedCounselor.profile.nickname}
+                  onSubmit={(review) => onSubmitReview(selectedCounselor.id, review)}
+                />
 
                 {selectedCounselor.reviews.length ? (
                   <>
@@ -774,6 +900,48 @@ function App() {
     setIsAdminView(false)
     setSelectedCounselorId(counselorId)
     window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
+  const handleReviewSubmit = async (counselorId: string, draft: ReviewDraft) => {
+    const counselor = data.counselors.find((item) => item.id === counselorId)
+    if (!counselor?.isActive) return false
+
+    const review: Review = {
+      ...draft,
+      overall: clampRating(draft.overall),
+      empathy: clampRating(draft.empathy),
+      listening: clampRating(draft.listening),
+      comfort: clampRating(draft.comfort),
+      emoji: draft.emoji.trim() || '😊',
+      comment: draft.comment.trim().slice(0, 1000),
+      id: makeReviewId(),
+      createdAt: new Date().toISOString(),
+    }
+
+    if (review.comment.length < 2) return false
+
+    if (isRemoteReady) {
+      const remote = await requestJson<RemotePayload>('/api/profile', {
+        method: 'POST',
+        body: JSON.stringify({ type: 'review', counselorId, review }),
+      })
+
+      if (!remote) return false
+      setData(makeDataFromRemote(remote, data.activeCounselorId))
+      return true
+    }
+
+    const nextData: AppData = {
+      ...data,
+      counselors: data.counselors.map((item) =>
+        item.id === counselorId
+          ? { ...item, reviews: [review, ...item.reviews].slice(0, 200) }
+          : item,
+      ),
+    }
+    writeLocalData(nextData, localPasswordHashes, localAdminPasswordHash)
+    setData(nextData)
+    return true
   }
 
   const handleAdminAccess = async (event: FormEvent<HTMLFormElement>) => {
@@ -1066,6 +1234,7 @@ function App() {
         selectedCounselorId={selectedCounselorId}
         onSelectCounselor={showCounselor}
         onBackToDirectory={showProfiles}
+        onSubmitReview={handleReviewSubmit}
       />
     )
   }

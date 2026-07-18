@@ -252,7 +252,7 @@ const sanitizeReview = (value: unknown): Review | null => {
     listening: clampRating(value.listening),
     comfort: clampRating(value.comfort),
     emoji: cleanString(value.emoji, '😊'),
-    comment: cleanString(value.comment, ''),
+    comment: cleanString(value.comment, '').slice(0, 1000),
     createdAt: cleanString(value.createdAt, new Date().toISOString()),
   }
 }
@@ -577,10 +577,22 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
       if (body.type === 'review') {
         const counselorIndex = findCounselorIndex(storedData, body.counselorId)
-        const review = sanitizeReview(body.review)
+        const sanitizedReview = sanitizeReview(body.review)
+        const review = sanitizedReview
+          ? {
+              ...sanitizedReview,
+              id: `review-${randomBytes(16).toString('hex')}`,
+              createdAt: new Date().toISOString(),
+            }
+          : null
 
-        if (counselorIndex < 0 || !storedData || !review) {
+        if (counselorIndex < 0 || !storedData || !review || review.comment.length < 2) {
           res.status(400).json({ error: 'Invalid review' })
+          return
+        }
+
+        if (!storedData.counselors[counselorIndex].isActive) {
+          res.status(409).json({ error: 'Counselor is not active' })
           return
         }
 
