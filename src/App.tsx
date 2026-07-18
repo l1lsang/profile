@@ -427,6 +427,101 @@ function SummaryCard({
   )
 }
 
+function PublicProfiles({
+  counselors,
+  isLoading,
+  onOpenAdmin,
+}: {
+  counselors: Counselor[]
+  isLoading: boolean
+  onOpenAdmin: () => void
+}) {
+  const visibleCounselors = counselors.filter((counselor) => counselor.isActive)
+
+  return (
+    <main className="public-page">
+      <header className="public-header">
+        <a className="public-brand" href="/" aria-label="온마음 상담사 프로필 홈">
+          <span className="brand-mark">온</span>
+          <span><strong>온마음</strong><small>상담사 프로필</small></span>
+        </a>
+        <button className="admin-entry" type="button" onClick={onOpenAdmin}>
+          <Icon name="lock" size={15} /> 상담사 관리
+        </button>
+      </header>
+
+      <section className="public-hero">
+        <p className="public-eyebrow">COUNSELOR DIRECTORY</p>
+        <h1>내 마음에 맞는 상담사를<br />편안하게 만나보세요.</h1>
+        <p>활동 중인 상담사의 소개와 상담 방식, 전문 분야를 누구나 확인할 수 있어요.</p>
+        <div className="public-count"><strong>{visibleCounselors.length}</strong><span>명의 상담사가 함께하고 있어요</span></div>
+      </section>
+
+      <section className="public-directory" aria-labelledby="public-directory-title">
+        <div className="public-section-heading">
+          <div><p>OUR COUNSELORS</p><h2 id="public-directory-title">상담사 프로필</h2></div>
+          <span>현재 상담 가능한 프로필만 표시됩니다</span>
+        </div>
+
+        {isLoading ? (
+          <div className="public-state" aria-live="polite">
+            <span className="loading-spinner" />
+            <strong>상담사 정보를 불러오고 있어요</strong>
+          </div>
+        ) : visibleCounselors.length ? (
+          <div className="public-profile-grid">
+            {visibleCounselors.map((counselor) => {
+              const rating = average(counselor.reviews, 'overall')
+              const { profile } = counselor
+              return (
+                <article className="public-profile-card" key={counselor.id}>
+                  <div className="public-card-top">
+                    <span className="public-avatar" aria-hidden="true">{profile.avatarEmoji}</span>
+                    <div className="public-identity">
+                      <span className="public-available"><i /> 상담 가능</span>
+                      <h3>{profile.nickname} 상담사</h3>
+                      <p>{profile.adviceStyle}</p>
+                    </div>
+                    <div className="public-rating" aria-label={`만족도 ${formatAverage(rating)}점`}>
+                      <b>★</b><strong>{formatAverage(rating)}</strong><small>{counselor.reviews.length}개 후기</small>
+                    </div>
+                  </div>
+
+                  <blockquote>“{profile.intro}”</blockquote>
+
+                  <div className="public-tags" aria-label="전문 분야">
+                    {profile.specialties.map((item) => <span key={item}>{item}</span>)}
+                  </div>
+
+                  <dl className="public-details">
+                    <div><dt>상담 분위기</dt><dd>{profile.atmosphere.join(' · ')}</dd></div>
+                    <div><dt>상담 방식</dt><dd>{profile.methods.join(' · ')}</dd></div>
+                    <div><dt>응답 속도</dt><dd>{profile.responseSpeed}</dd></div>
+                    <div><dt>상담 안내</dt><dd>{profile.statusEmoji} {profile.contactNote}</dd></div>
+                  </dl>
+
+                  <div className="public-strengths">
+                    <span><small>공감력</small><strong>{profile.empathy}.0</strong><i style={{ '--score': `${profile.empathy * 20}%` } as React.CSSProperties} /></span>
+                    <span><small>경청력</small><strong>{profile.listening}.0</strong><i style={{ '--score': `${profile.listening * 20}%` } as React.CSSProperties} /></span>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        ) : (
+          <div className="public-state">
+            <span className="public-state-icon">🌱</span>
+            <strong>현재 공개된 상담사 프로필이 없어요</strong>
+            <p>활동 중인 상담사가 등록되면 이곳에 표시됩니다.</p>
+          </div>
+        )}
+      </section>
+
+      <footer className="public-footer"><strong>온마음</strong><span>마음을 잇는 따뜻한 상담 공간</span><small>© 2026 온마음</small></footer>
+    </main>
+  )
+}
+
 function App() {
   const [data, setData] = useState<AppData>(() => makeDefaultData())
   const [draft, setDraft] = useState<CounselorProfile>(() => makeDefaultProfile())
@@ -451,6 +546,9 @@ function App() {
   const [adminError, setAdminError] = useState('')
   const [isAdminSubmitting, setIsAdminSubmitting] = useState(false)
   const [localAdminPasswordHash, setLocalAdminPasswordHash] = useState('')
+  const [isAdminView, setIsAdminView] = useState(
+    () => new URLSearchParams(window.location.search).get('mode') === 'admin',
+  )
 
   const activeCounselor =
     data.counselors.find((counselor) => counselor.id === data.activeCounselorId) ?? data.counselors[0]
@@ -529,6 +627,29 @@ function App() {
     hydrate()
     return () => { isActive = false }
   }, [])
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setIsAdminView(new URLSearchParams(window.location.search).get('mode') === 'admin')
+    }
+    window.addEventListener('popstate', handlePopState)
+    return () => window.removeEventListener('popstate', handlePopState)
+  }, [])
+
+  const showAdmin = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('mode', 'admin')
+    window.history.pushState({}, '', url)
+    setIsAdminView(true)
+  }
+
+  const showProfiles = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('mode')
+    window.history.pushState({}, '', url)
+    setIsAdminView(false)
+    setAdminError('')
+  }
 
   const handleAdminAccess = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -811,6 +932,10 @@ function App() {
     setStatus('상담사를 삭제했어요.')
   }
 
+  if (!isAdminView) {
+    return <PublicProfiles counselors={data.counselors} isLoading={isLoading} onOpenAdmin={showAdmin} />
+  }
+
   if (!isAdminAuthenticated) {
     return (
       <main className="access-page">
@@ -891,6 +1016,9 @@ function App() {
                 <span className={isRemoteReady ? 'remote' : 'local'} />
                 {isRemoteReady ? 'Firebase 보안 저장소 연결됨' : '로컬 저장 모드'}
               </div>
+              <button className="back-to-profiles" type="button" onClick={showProfiles}>
+                ← 공개 프로필로 돌아가기
+              </button>
             </>
           )}
         </section>
@@ -920,6 +1048,7 @@ function App() {
             <Icon name="logout" />
           </button>
         </div>
+        <button className="sidebar-public-link" type="button" onClick={showProfiles}>← 공개 프로필 보기</button>
       </aside>
 
       <main className="admin-main">
