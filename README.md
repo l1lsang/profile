@@ -20,8 +20,11 @@ FIREBASE_PROJECT_ID=
 FIREBASE_CLIENT_EMAIL=
 FIREBASE_PRIVATE_KEY=
 FIREBASE_DATABASE_ID=(default)
+ADMIN_PASSWORD=
 ```
 
 `FIREBASE_PRIVATE_KEY`는 서비스 계정 JSON의 `private_key` 값을 넣고, 줄바꿈은 `\n` 그대로 두면 됩니다.
+
+`ADMIN_PASSWORD`는 서버에서만 읽는 관리자 비밀번호입니다. 값을 바꾼 뒤 다시 배포하면 새 비밀번호가 즉시 적용됩니다. 브라우저에 노출되는 `VITE_` 접두사는 사용하지 마세요. `ADMIN_PASSWORD`가 없을 때만 기존의 최초 관리자 비밀번호 등록 방식을 사용합니다.
 
 Firestore 문서는 `counselorProfiles/main` 하나를 사용하고, 내부에 상담사 배열을 저장합니다. 공개 조회 응답에는 암호 해시가 포함되지 않고, 각 상담사 프로필 수정 시에만 해당 상담사의 암호를 확인합니다.

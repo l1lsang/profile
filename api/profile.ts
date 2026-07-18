@@ -125,6 +125,11 @@ const makeDefaultProfile = (): CounselorProfile => ({
 const hashPassword = (password: string) =>
   createHash('sha256').update(password, 'utf8').digest('hex')
 
+const getEnvironmentAdminPassword = () => process.env.ADMIN_PASSWORD?.trim() ?? ''
+
+const isAdminPasswordConfigured = (storedHash: string) =>
+  Boolean(getEnvironmentAdminPassword() || storedHash)
+
 const hashAdminPassword = (password: string) => {
   const salt = randomBytes(16)
   const hash = pbkdf2Sync(
@@ -164,6 +169,22 @@ const verifyAdminPassword = (password: unknown, storedHash: string) => {
   } catch {
     return false
   }
+}
+
+const verifyConfiguredAdminPassword = (password: unknown, storedHash: string) => {
+  const environmentPassword = getEnvironmentAdminPassword()
+
+  if (environmentPassword) {
+    if (typeof password !== 'string') {
+      return false
+    }
+
+    const expected = Buffer.from(hashPassword(environmentPassword), 'hex')
+    const actual = Buffer.from(hashPassword(password), 'hex')
+    return timingSafeEqual(actual, expected)
+  }
+
+  return verifyAdminPassword(password, storedHash)
 }
 
 const clampRating = (value: unknown) => {
@@ -456,7 +477,7 @@ const toPublicPayload = (data: StoredData | null) => {
   return {
     counselors,
     activeCounselorId: counselors[0]?.id ?? '',
-    adminConfigured: Boolean(data?.adminPasswordHash),
+    adminConfigured: isAdminPasswordConfigured(data?.adminPasswordHash ?? ''),
   }
 }
 
@@ -504,7 +525,7 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const storedData = await readStoredData(config)
 
       if (body.type === 'admin-register') {
-        if (storedData?.adminPasswordHash) {
+        if (isAdminPasswordConfigured(storedData?.adminPasswordHash ?? '')) {
           res.status(409).json({ error: 'Admin password is already configured' })
           return
         }
@@ -527,12 +548,14 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       }
 
       if (body.type === 'admin-login') {
-        if (!storedData?.adminPasswordHash) {
+        const storedHash = storedData?.adminPasswordHash ?? ''
+
+        if (!isAdminPasswordConfigured(storedHash)) {
           res.status(409).json({ error: 'Admin password is not configured' })
           return
         }
 
-        const ok = verifyAdminPassword(body.password, storedData.adminPasswordHash)
+        const ok = verifyConfiguredAdminPassword(body.password, storedHash)
         res.status(ok ? 200 : 401).json({ ok })
         return
       }
@@ -602,11 +625,12 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
       const currentHash = existingCounselor?.passwordHash ?? ''
       const password = typeof body.password === 'string' ? body.password : ''
       const newPassword = typeof body.newPassword === 'string' ? body.newPassword.trim() : ''
-      const isAdminAuthorized = verifyAdminPassword(body.adminPassword, storedData.adminPasswordHash)
+      const adminPasswordConfigured = isAdminPasswordConfigured(storedData.adminPasswordHash)
+      const isAdminAuthorized = verifyConfiguredAdminPassword(body.adminPassword, storedData.adminPasswordHash)
       const isCounselorAuthorized = Boolean(currentHash) && hashPassword(password) === currentHash
       let nextPasswordHash = currentHash
 
-      const isUpdateDenied = storedData.adminPasswordHash
+      const isUpdateDenied = adminPasswordConfigured
         ? !isAdminAuthorized && !isCounselorAuthorized
         : Boolean(currentHash) && !isCounselorAuthorized
 
@@ -658,9 +682,10 @@ export default async function handler(req: ApiRequest, res: ApiResponse) {
 
       const password = typeof body.password === 'string' ? body.password : ''
       const passwordHash = storedData.counselors[counselorIndex].passwordHash
-      const isAdminAuthorized = verifyAdminPassword(body.adminPassword, storedData.adminPasswordHash)
+      const adminPasswordConfigured = isAdminPasswordConfigured(storedData.adminPasswordHash)
+      const isAdminAuthorized = verifyConfiguredAdminPassword(body.adminPassword, storedData.adminPasswordHash)
       const isCounselorAuthorized = Boolean(passwordHash) && hashPassword(password) === passwordHash
-      const isDeleteDenied = storedData.adminPasswordHash
+      const isDeleteDenied = adminPasswordConfigured
         ? !isAdminAuthorized && !isCounselorAuthorized
         : Boolean(passwordHash) && !isCounselorAuthorized
 

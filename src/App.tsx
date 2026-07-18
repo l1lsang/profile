@@ -431,18 +431,26 @@ function PublicProfiles({
   counselors,
   isLoading,
   onOpenAdmin,
+  selectedCounselorId,
+  onSelectCounselor,
+  onBackToDirectory,
 }: {
   counselors: Counselor[]
   isLoading: boolean
   onOpenAdmin: () => void
+  selectedCounselorId: string
+  onSelectCounselor: (counselorId: string) => void
+  onBackToDirectory: () => void
 }) {
   const visibleCounselors = counselors.filter((counselor) => counselor.isActive)
+  const selectedCounselor = visibleCounselors.find((counselor) => counselor.id === selectedCounselorId)
+  const selectedRating = selectedCounselor ? average(selectedCounselor.reviews, 'overall') : 0
 
   return (
     <main className="public-page">
       <header className="public-header">
-        <a className="public-brand" href="/" aria-label="마음의 쉼터 상담사 프로필 홈">
-          <span className="brand-mark">온</span>
+        <a className="public-brand" href="/" aria-label="마음의 쉼터 상담사 프로필 홈" onClick={(event) => { event.preventDefault(); onBackToDirectory() }}>
+          <span className="brand-mark">쉼</span>
           <span><strong>마음의 쉼터</strong><small>상담사 프로필</small></span>
         </a>
         <button className="admin-entry" type="button" onClick={onOpenAdmin}>
@@ -450,20 +458,109 @@ function PublicProfiles({
         </button>
       </header>
 
-      <section className="public-hero">
-        <p className="public-eyebrow">COUNSELOR DIRECTORY</p>
-        <h1>내 마음에 맞는 상담사를<br />편안하게 만나보세요.</h1>
-        <p>활동 중인 상담사의 소개와 상담 방식, 전문 분야를 누구나 확인할 수 있어요.</p>
-        <div className="public-count"><strong>{visibleCounselors.length}</strong><span>명의 상담사가 함께하고 있어요</span></div>
-      </section>
+      {selectedCounselorId ? (
+        <section className="public-detail" aria-labelledby="public-detail-title">
+          <button className="public-back-button" type="button" onClick={onBackToDirectory}>← 상담사 목록으로</button>
+          {isLoading ? (
+            <div className="public-state" aria-live="polite">
+              <span className="loading-spinner" />
+              <strong>상담사 상세 정보를 불러오고 있어요</strong>
+            </div>
+          ) : selectedCounselor ? (
+            <>
+              <article className="public-detail-profile">
+                <div className="public-detail-intro">
+                  <span className="public-detail-avatar" aria-hidden="true">{selectedCounselor.profile.avatarEmoji}</span>
+                  <div>
+                    <span className="public-available"><i /> 상담 가능</span>
+                    <p className="public-eyebrow">COUNSELOR PROFILE</p>
+                    <h1 id="public-detail-title">{selectedCounselor.profile.nickname} 상담사</h1>
+                    <p className="public-detail-style">{selectedCounselor.profile.adviceStyle}</p>
+                  </div>
+                  <div className="public-detail-rating" aria-label={`만족도 ${formatAverage(selectedRating)}점, 후기 ${selectedCounselor.reviews.length}개`}>
+                    <span>★</span><strong>{formatAverage(selectedRating)}</strong><small>{selectedCounselor.reviews.length}개 후기</small>
+                  </div>
+                </div>
 
-      <section className="public-directory" aria-labelledby="public-directory-title">
-        <div className="public-section-heading">
-          <div><p>OUR COUNSELORS</p><h2 id="public-directory-title">상담사 프로필</h2></div>
-          <span>현재 상담 가능한 프로필만 표시됩니다</span>
-        </div>
+                <blockquote>“{selectedCounselor.profile.intro}”</blockquote>
+                <div className="public-tags" aria-label="전문 분야">
+                  {selectedCounselor.profile.specialties.map((item) => <span key={item}>{item}</span>)}
+                </div>
+                <dl className="public-detail-facts">
+                  <div><dt>상담 분위기</dt><dd>{selectedCounselor.profile.atmosphere.join(' · ')}</dd></div>
+                  <div><dt>상담 방식</dt><dd>{selectedCounselor.profile.methods.join(' · ')}</dd></div>
+                  <div><dt>응답 속도</dt><dd>{selectedCounselor.profile.responseSpeed}</dd></div>
+                  <div><dt>상담 안내</dt><dd>{selectedCounselor.profile.statusEmoji} {selectedCounselor.profile.contactNote}</dd></div>
+                  <div><dt>공감력</dt><dd>{selectedCounselor.profile.empathy}.0 / 5.0</dd></div>
+                  <div><dt>경청력</dt><dd>{selectedCounselor.profile.listening}.0 / 5.0</dd></div>
+                </dl>
+              </article>
 
-        {isLoading ? (
+              <section className="public-reviews" aria-labelledby="public-reviews-title">
+                <div className="public-review-heading">
+                  <div><p>COUNSELOR REVIEWS</p><h2 id="public-reviews-title">상담 후기</h2></div>
+                  <strong>{selectedCounselor.reviews.length}개</strong>
+                </div>
+
+                {selectedCounselor.reviews.length ? (
+                  <>
+                    <div className="public-review-summary" aria-label="후기 평균 점수">
+                      <div className="is-overall"><small>전체 만족도</small><strong>★ {formatAverage(selectedRating)}</strong></div>
+                      <div><small>공감</small><strong>{formatAverage(average(selectedCounselor.reviews, 'empathy'))}</strong></div>
+                      <div><small>경청</small><strong>{formatAverage(average(selectedCounselor.reviews, 'listening'))}</strong></div>
+                      <div><small>편안함</small><strong>{formatAverage(average(selectedCounselor.reviews, 'comfort'))}</strong></div>
+                    </div>
+                    <div className="public-review-list">
+                      {selectedCounselor.reviews.map((review) => (
+                        <article className="public-review-card" key={review.id}>
+                          <header>
+                            <span className="public-review-emoji" aria-hidden="true">{review.emoji}</span>
+                            <div><strong>상담 이용자</strong><time dateTime={review.createdAt}>{formatDate(review.createdAt)}</time></div>
+                            <span className="public-review-score">★ {formatAverage(review.overall)}</span>
+                          </header>
+                          <p>{review.comment || '작성된 후기 내용이 없습니다.'}</p>
+                          <dl>
+                            <div><dt>공감</dt><dd>{review.empathy}.0</dd></div>
+                            <div><dt>경청</dt><dd>{review.listening}.0</dd></div>
+                            <div><dt>편안함</dt><dd>{review.comfort}.0</dd></div>
+                          </dl>
+                        </article>
+                      ))}
+                    </div>
+                  </>
+                ) : (
+                  <div className="public-state public-review-empty">
+                    <span className="public-state-icon">💬</span>
+                    <strong>아직 등록된 후기가 없어요</strong>
+                    <p>첫 상담 후기가 등록되면 이곳에서 확인할 수 있어요.</p>
+                  </div>
+                )}
+              </section>
+            </>
+          ) : (
+            <div className="public-state">
+              <span className="public-state-icon">🔎</span>
+              <strong>상담사 프로필을 찾을 수 없어요</strong>
+              <p>상담사 목록으로 돌아가 다른 프로필을 확인해주세요.</p>
+            </div>
+          )}
+        </section>
+      ) : (
+        <>
+          <section className="public-hero">
+            <p className="public-eyebrow">COUNSELOR DIRECTORY</p>
+            <h1>내 마음에 맞는 상담사를<br />편안하게 만나보세요.</h1>
+            <p>활동 중인 상담사의 소개와 상담 방식, 전문 분야를 누구나 확인할 수 있어요.</p>
+            <div className="public-count"><strong>{visibleCounselors.length}</strong><span>명의 상담사가 함께하고 있어요</span></div>
+          </section>
+
+          <section className="public-directory" aria-labelledby="public-directory-title">
+            <div className="public-section-heading">
+              <div><p>OUR COUNSELORS</p><h2 id="public-directory-title">상담사 프로필</h2></div>
+              <span>현재 상담 가능한 프로필만 표시됩니다</span>
+            </div>
+
+            {isLoading ? (
           <div className="public-state" aria-live="polite">
             <span className="loading-spinner" />
             <strong>상담사 정보를 불러오고 있어요</strong>
@@ -504,6 +601,13 @@ function PublicProfiles({
                     <span><small>공감력</small><strong>{profile.empathy}.0</strong><i style={{ '--score': `${profile.empathy * 20}%` } as React.CSSProperties} /></span>
                     <span><small>경청력</small><strong>{profile.listening}.0</strong><i style={{ '--score': `${profile.listening * 20}%` } as React.CSSProperties} /></span>
                   </div>
+                  <a
+                    className="public-profile-link"
+                    href={`?counselor=${encodeURIComponent(counselor.id)}`}
+                    onClick={(event) => { event.preventDefault(); onSelectCounselor(counselor.id) }}
+                  >
+                    프로필과 후기 전체 보기 <span aria-hidden="true">→</span>
+                  </a>
                 </article>
               )
             })}
@@ -514,8 +618,10 @@ function PublicProfiles({
             <strong>현재 공개된 상담사 프로필이 없어요</strong>
             <p>활동 중인 상담사가 등록되면 이곳에 표시됩니다.</p>
           </div>
-        )}
-      </section>
+            )}
+          </section>
+        </>
+      )}
 
       <footer className="public-footer"><strong>마음의 쉼터</strong><span>마음을 잇는 따뜻한 상담 공간</span><small>© 2026 마음의 쉼터</small></footer>
     </main>
@@ -548,6 +654,9 @@ function App() {
   const [localAdminPasswordHash, setLocalAdminPasswordHash] = useState('')
   const [isAdminView, setIsAdminView] = useState(
     () => new URLSearchParams(window.location.search).get('mode') === 'admin',
+  )
+  const [selectedCounselorId, setSelectedCounselorId] = useState(
+    () => new URLSearchParams(window.location.search).get('counselor') ?? '',
   )
 
   const activeCounselor =
@@ -630,7 +739,9 @@ function App() {
 
   useEffect(() => {
     const handlePopState = () => {
-      setIsAdminView(new URLSearchParams(window.location.search).get('mode') === 'admin')
+      const searchParams = new URLSearchParams(window.location.search)
+      setIsAdminView(searchParams.get('mode') === 'admin')
+      setSelectedCounselorId(searchParams.get('counselor') ?? '')
     }
     window.addEventListener('popstate', handlePopState)
     return () => window.removeEventListener('popstate', handlePopState)
@@ -639,16 +750,30 @@ function App() {
   const showAdmin = () => {
     const url = new URL(window.location.href)
     url.searchParams.set('mode', 'admin')
+    url.searchParams.delete('counselor')
     window.history.pushState({}, '', url)
     setIsAdminView(true)
+    setSelectedCounselorId('')
   }
 
   const showProfiles = () => {
     const url = new URL(window.location.href)
     url.searchParams.delete('mode')
+    url.searchParams.delete('counselor')
     window.history.pushState({}, '', url)
     setIsAdminView(false)
+    setSelectedCounselorId('')
     setAdminError('')
+  }
+
+  const showCounselor = (counselorId: string) => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('mode')
+    url.searchParams.set('counselor', counselorId)
+    window.history.pushState({}, '', url)
+    setIsAdminView(false)
+    setSelectedCounselorId(counselorId)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
   const handleAdminAccess = async (event: FormEvent<HTMLFormElement>) => {
@@ -933,7 +1058,16 @@ function App() {
   }
 
   if (!isAdminView) {
-    return <PublicProfiles counselors={data.counselors} isLoading={isLoading} onOpenAdmin={showAdmin} />
+    return (
+      <PublicProfiles
+        counselors={data.counselors}
+        isLoading={isLoading}
+        onOpenAdmin={showAdmin}
+        selectedCounselorId={selectedCounselorId}
+        onSelectCounselor={showCounselor}
+        onBackToDirectory={showProfiles}
+      />
+    )
   }
 
   if (!isAdminAuthenticated) {
@@ -943,7 +1077,7 @@ function App() {
         <div className="access-ambient access-ambient-two" />
         <section className="access-card" aria-labelledby="admin-access-title">
           <div className="access-brand">
-            <span className="brand-mark">온</span>
+            <span className="brand-mark">쉼</span>
             <div><strong>마음의 쉼터</strong><small>관리자 콘솔</small></div>
           </div>
 
@@ -999,7 +1133,7 @@ function App() {
                 )}
 
                 <p className="password-hint">
-                  <Icon name="lock" size={14} /> 비밀번호는 암호화되어 저장되며 화면에 표시되지 않아요.
+                  <Icon name="lock" size={14} /> 비밀번호는 서버에서만 확인되며 화면에 표시되지 않아요.
                 </p>
                 {adminError && <p className="access-error" role="alert">{adminError}</p>}
                 <button className="access-submit" type="submit" disabled={isAdminSubmitting}>
@@ -1031,7 +1165,7 @@ function App() {
     <div className="admin-layout">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">온</span>
+          <span className="brand-mark">쉼</span>
           <div><strong>마음의 쉼터</strong><small>관리자 콘솔</small></div>
         </div>
         <nav className="main-nav" aria-label="관리자 메뉴">
