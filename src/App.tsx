@@ -441,9 +441,9 @@ function PublicProfiles({
   return (
     <main className="public-page">
       <header className="public-header">
-        <a className="public-brand" href="/" aria-label="온마음 상담사 프로필 홈">
+        <a className="public-brand" href="/" aria-label="마음의 쉼터 상담사 프로필 홈">
           <span className="brand-mark">온</span>
-          <span><strong>온마음</strong><small>상담사 프로필</small></span>
+          <span><strong>마음의 쉼터</strong><small>상담사 프로필</small></span>
         </a>
         <button className="admin-entry" type="button" onClick={onOpenAdmin}>
           <Icon name="lock" size={15} /> 상담사 관리
@@ -517,7 +517,7 @@ function PublicProfiles({
         )}
       </section>
 
-      <footer className="public-footer"><strong>온마음</strong><span>마음을 잇는 따뜻한 상담 공간</span><small>© 2026 온마음</small></footer>
+      <footer className="public-footer"><strong>마음의 쉼터</strong><span>마음을 잇는 따뜻한 상담 공간</span><small>© 2026 마음의 쉼터</small></footer>
     </main>
   )
 }
@@ -944,7 +944,7 @@ function App() {
         <section className="access-card" aria-labelledby="admin-access-title">
           <div className="access-brand">
             <span className="brand-mark">온</span>
-            <div><strong>온마음</strong><small>관리자 콘솔</small></div>
+            <div><strong>마음의 쉼터</strong><small>관리자 콘솔</small></div>
           </div>
 
           {isLoading ? (
@@ -1022,7 +1022,7 @@ function App() {
             </>
           )}
         </section>
-        <p className="access-footer">© 2026 온마음 · 승인된 관리자만 접근할 수 있습니다.</p>
+        <p className="access-footer">© 2026 마음의 쉼터 · 승인된 관리자만 접근할 수 있습니다.</p>
       </main>
     )
   }
@@ -1032,7 +1032,7 @@ function App() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brand-mark">온</span>
-          <div><strong>온마음</strong><small>관리자 콘솔</small></div>
+          <div><strong>마음의 쉼터</strong><small>관리자 콘솔</small></div>
         </div>
         <nav className="main-nav" aria-label="관리자 메뉴">
           <p>운영 관리</p>
