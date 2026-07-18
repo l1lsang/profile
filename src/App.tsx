@@ -28,7 +28,7 @@ type Review = {
   createdAt: string
 }
 
-type ReviewDraft = Omit<Review, 'id' | 'createdAt'>
+type ReviewDraft = Pick<Review, 'overall' | 'comment'>
 
 type Counselor = {
   id: string
@@ -92,7 +92,6 @@ const LOCAL_STORAGE_KEY = 'counselor-profile-data-v1'
 const ADMIN_PASSWORD_ITERATIONS = 120_000
 const ADMIN_PASSWORD_KEY_LENGTH = 32
 const emojiOptions = ['🌤️', '🌿', '🫶', '☕', '💬', '✨']
-const reviewEmojiOptions = ['😊', '🫶', '🌿', '✨', '💛']
 const ratingSteps = [1, 2, 3, 4, 5]
 const counselorFilters: { value: CounselorFilter; label: string }[] = [
   { value: 'all', label: '전체' },
@@ -417,22 +416,11 @@ function PublicReviewForm({
 }) {
   const [review, setReview] = useState<ReviewDraft>({
     overall: 5,
-    empathy: 5,
-    listening: 5,
-    comfort: 5,
-    emoji: '😊',
     comment: '',
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [feedback, setFeedback] = useState('')
   const [hasError, setHasError] = useState(false)
-
-  const updateRating = (
-    key: keyof Pick<ReviewDraft, 'overall' | 'empathy' | 'listening' | 'comfort'>,
-    value: number,
-  ) => {
-    setReview((current) => ({ ...current, [key]: value }))
-  }
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -462,7 +450,7 @@ function PublicReviewForm({
       return
     }
 
-    setReview({ overall: 5, empathy: 5, listening: 5, comfort: 5, emoji: '😊', comment: '' })
+    setReview({ overall: 5, comment: '' })
     setFeedback('후기가 등록됐어요. 소중한 마음을 나눠주셔서 감사해요.')
   }
 
@@ -474,29 +462,8 @@ function PublicReviewForm({
       </div>
 
       <div className="public-review-ratings">
-        <RatingButtons label="전체 만족도" value={review.overall} onChange={(value) => updateRating('overall', value)} />
-        <RatingButtons label="공감" value={review.empathy} onChange={(value) => updateRating('empathy', value)} />
-        <RatingButtons label="경청" value={review.listening} onChange={(value) => updateRating('listening', value)} />
-        <RatingButtons label="편안함" value={review.comfort} onChange={(value) => updateRating('comfort', value)} />
+        <RatingButtons label="전체 만족도" value={review.overall} onChange={(value) => setReview((current) => ({ ...current, overall: value }))} />
       </div>
-
-      <fieldset className="public-review-emojis">
-        <legend>상담을 표현하는 이모지</legend>
-        <div>
-          {reviewEmojiOptions.map((emoji) => (
-            <button
-              key={emoji}
-              type="button"
-              className={review.emoji === emoji ? 'is-selected' : ''}
-              onClick={() => setReview((current) => ({ ...current, emoji }))}
-              aria-pressed={review.emoji === emoji}
-              aria-label={`${emoji} 선택`}
-            >
-              {emoji}
-            </button>
-          ))}
-        </div>
-      </fieldset>
 
       <label className="public-review-comment">
         후기 내용
@@ -632,24 +599,15 @@ function PublicProfiles({
                   <>
                     <div className="public-review-summary" aria-label="후기 평균 점수">
                       <div className="is-overall"><small>전체 만족도</small><strong>★ {formatAverage(selectedRating)}</strong></div>
-                      <div><small>공감</small><strong>{formatAverage(average(selectedCounselor.reviews, 'empathy'))}</strong></div>
-                      <div><small>경청</small><strong>{formatAverage(average(selectedCounselor.reviews, 'listening'))}</strong></div>
-                      <div><small>편안함</small><strong>{formatAverage(average(selectedCounselor.reviews, 'comfort'))}</strong></div>
                     </div>
                     <div className="public-review-list">
                       {selectedCounselor.reviews.map((review) => (
                         <article className="public-review-card" key={review.id}>
                           <header>
-                            <span className="public-review-emoji" aria-hidden="true">{review.emoji}</span>
                             <div><strong>상담 이용자</strong><time dateTime={review.createdAt}>{formatDate(review.createdAt)}</time></div>
                             <span className="public-review-score">★ {formatAverage(review.overall)}</span>
                           </header>
                           <p>{review.comment || '작성된 후기 내용이 없습니다.'}</p>
-                          <dl>
-                            <div><dt>공감</dt><dd>{review.empathy}.0</dd></div>
-                            <div><dt>경청</dt><dd>{review.listening}.0</dd></div>
-                            <div><dt>편안함</dt><dd>{review.comfort}.0</dd></div>
-                          </dl>
                         </article>
                       ))}
                     </div>
@@ -909,10 +867,10 @@ function App() {
     const review: Review = {
       ...draft,
       overall: clampRating(draft.overall),
-      empathy: clampRating(draft.empathy),
-      listening: clampRating(draft.listening),
-      comfort: clampRating(draft.comfort),
-      emoji: draft.emoji.trim() || '😊',
+      empathy: clampRating(draft.overall),
+      listening: clampRating(draft.overall),
+      comfort: clampRating(draft.overall),
+      emoji: '💬',
       comment: draft.comment.trim().slice(0, 1000),
       id: makeReviewId(),
       createdAt: new Date().toISOString(),
